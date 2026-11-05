@@ -1,11 +1,22 @@
-param([string]$Toolchain = '', [switch]$Check)
+param([string]$Toolchain = '', [switch]$Check, [switch]$Zip)
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 Push-Location $projectRoot
 $previousRustFlags = $env:RUSTFLAGS
+$previousPath = $env:PATH
+$previousCargoHome = $env:CARGO_HOME
+$previousRustupHome = $env:RUSTUP_HOME
 try {
     $cargoCommand = Get-Command cargo -ErrorAction SilentlyContinue
     $cargoExe = if ($cargoCommand) { $cargoCommand.Source } else { Join-Path $env:USERPROFILE '.cargo/bin/cargo.exe' }
+    $localCargo = Join-Path $projectRoot 'target/tools/cargo/bin/cargo.exe'
+    if (-not (Test-Path -LiteralPath $cargoExe) -and (Test-Path -LiteralPath $localCargo)) {
+        $cargoExe = $localCargo
+        $env:CARGO_HOME = Join-Path $projectRoot 'target/tools/cargo'
+        $env:RUSTUP_HOME = Join-Path $projectRoot 'target/tools/rustup'
+        $env:PATH = "$(Split-Path -Parent $cargoExe);$(Join-Path $projectRoot 'target/tools/mingw64/bin');$previousPath"
+        if (-not $Toolchain) { $Toolchain = 'stable-x86_64-pc-windows-gnu' }
+    }
     if (-not (Test-Path -LiteralPath $cargoExe)) { throw 'Install Rust from https://rustup.rs, then run this script again.' }
     $cargoArgs = @()
     if ($Toolchain) { $cargoArgs = @("+$Toolchain") }
@@ -41,14 +52,22 @@ try {
     New-Item -ItemType Directory -Force -Path $destination | Out-Null
     Copy-Item -LiteralPath 'target/release/mgame.exe' -Destination $destination
     Copy-Item -LiteralPath 'README.md' -Destination $destination
+    Copy-Item -LiteralPath 'MapEditor.cmd' -Destination $destination
     New-Item -ItemType Directory -Force -Path (Join-Path $destination 'Maps') | Out-Null
     Get-ChildItem -LiteralPath 'Maps' -File | Copy-Item -Destination (Join-Path $destination 'Maps')
     New-Item -ItemType Directory -Force -Path (Join-Path $destination 'levels') | Out-Null
     Get-ChildItem -LiteralPath 'levels' -File | Copy-Item -Destination (Join-Path $destination 'levels')
     Copy-Item -LiteralPath 'assets/fonts/OFL.txt' -Destination (Join-Path $destination 'FONT-LICENSE.txt')
-    Compress-Archive -Path "$destination/*" -DestinationPath (Join-Path $projectRoot 'dist/MGame-Overdrive-Windows.zip') -Force
+    New-Item -ItemType Directory -Force -Path (Join-Path $destination 'Music') | Out-Null
+    Get-ChildItem -LiteralPath 'Music' -File | Copy-Item -Destination (Join-Path $destination 'Music')
+    if ($Zip) {
+        Compress-Archive -Path "$destination/*" -DestinationPath (Join-Path $projectRoot 'dist/MGame-Overdrive-Windows.zip') -Force
+    }
     Write-Output "Ready: $destination/mgame.exe"
 } finally {
     $env:RUSTFLAGS = $previousRustFlags
+    $env:PATH = $previousPath
+    $env:CARGO_HOME = $previousCargoHome
+    $env:RUSTUP_HOME = $previousRustupHome
     Pop-Location
 }

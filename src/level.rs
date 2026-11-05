@@ -3,6 +3,31 @@ use std::{collections::VecDeque, path::Path};
 
 pub const TILE: f32 = 48.0;
 pub const CRATE_HALF: f32 = 20.0;
+pub const MAX_MAP_SIZE: usize = 1024;
+
+/// Shared syntax validation; the editor can open unfinished, unplayable maps.
+pub fn parse_grid(text: &str) -> Result<(usize, usize, Vec<u8>), String> {
+    let rows: Vec<&str> = text
+        .trim_start_matches('\u{feff}')
+        .lines()
+        .map(|s| s.trim_end_matches('\r'))
+        .filter(|s| !s.is_empty())
+        .collect();
+    let width = rows.first().ok_or("The map is empty")?.len();
+    if !(5..=MAX_MAP_SIZE).contains(&width) || !(5..=MAX_MAP_SIZE).contains(&rows.len()) {
+        return Err(format!(
+            "Map dimensions must be between 5 and {MAX_MAP_SIZE} tiles"
+        ));
+    }
+    if rows.iter().any(|r| r.len() != width || !r.is_ascii()) {
+        return Err("Map rows must have equal widths and contain ASCII characters".into());
+    }
+    let tiles: Vec<u8> = rows.iter().flat_map(|r| r.bytes()).collect();
+    if let Some(&c) = tiles.iter().find(|&&c| !matches!(c, b'0'..=b'6' | b'a'..=b'y' | b'#' | b'.' | b'P' | b'E' | b'+' | b'T' | b'~' | b'B' | b'C')) {
+        return Err(format!("Unknown map tile: {}", c as char));
+    }
+    Ok((width, rows.len(), tiles))
+}
 
 #[derive(Clone, Debug)]
 pub struct Level {
@@ -22,35 +47,17 @@ impl Level {
         crate::arenas::builtin(index)
     }
     pub fn parse(name: &str, text: &str) -> Result<Self, String> {
-        let rows: Vec<&str> = text
-            .trim_start_matches('\u{feff}')
-            .lines()
-            .map(|s| s.trim_end_matches('\r'))
-            .filter(|s| !s.is_empty())
-            .collect();
-        let width = rows.first().ok_or("The map is empty")?.len();
-        if !(5..=256).contains(&width) || !(5..=256).contains(&rows.len()) {
-            return Err("Map dimensions must be between 5 and 256 tiles".into());
-        }
-        if rows.iter().any(|r| r.len() != width || !r.is_ascii()) {
-            return Err("Map rows must have equal widths and contain ASCII characters".into());
-        }
-        let tiles: Vec<char> = rows.iter().flat_map(|r| r.chars()).collect();
-        if let Some(c) = tiles
-            .iter()
-            .find(|&&c| !matches!(c, '0'..='6' | 'a'..='y' | '#' | '.' | 'P' | 'E' | '+' | 'T' | '~' | 'B' | 'C'))
-        {
-            return Err(format!("Unknown map tile: {c}"));
-        }
+        let (width, height, bytes) = parse_grid(text)?;
+        let tiles: Vec<char> = bytes.into_iter().map(char::from).collect();
         let mut level = Self {
             name: name.into(),
             width,
-            height: rows.len(),
+            height,
             tiles,
             spawn: Vec2::ZERO,
             portals: vec![],
             medical: vec![],
-            reachable: vec![false; width * rows.len()],
+            reachable: vec![false; width * height],
             crates: vec![],
         };
         let start = level
@@ -293,6 +300,25 @@ impl Level {
     /// Breadth-first distance field, shared by every enemy. Cardinal edges cannot cut corners.
     pub fn flow_field(&self, target: Vec2) -> Vec<u32> {
         let mut field = vec![u32::MAX; self.tiles.len()];
+        // Rasterize crate collisions once, rather than testing every crate at every
+        // BFS edge. Cardinal moves only touch their two tiles (19 < TILE / 2).
+        let mut blocked = vec![[false; 3]; self.tiles.len()];
+        for &c in &self.crates {
+            let lo = ((c - Vec2::splat(CRATE_HALF + 19.0)) / TILE).floor();
+            let hi = ((c + Vec2::splat(CRATE_HALF + 19.0)) / TILE).ceil();
+            for y in (lo.y as i32 - 1).max(0)..=(hi.y as i32).min(self.height as i32 - 1) {
+                for x in (lo.x as i32 - 1).max(0)..=(hi.x as i32).min(self.width as i32 - 1) {
+                    let i = y as usize * self.width + x as usize;
+                    let p = self.center(i);
+                    for (k, offset) in [Vec2::ZERO, vec2(TILE * 0.5, 0.0), vec2(0.0, TILE * 0.5)]
+                        .iter()
+                        .enumerate()
+                    {
+                        blocked[i][k] |= circle_box(p + *offset, 19.0, c, CRATE_HALF);
+                    }
+                }
+            }
+        }
         let root = self.index(target);
         field[root] = 0;
         let mut queue = VecDeque::from([root]);
@@ -304,9 +330,16 @@ impl Level {
                     continue;
                 }
                 let n = ny as usize * self.width + nx as usize;
-                if !self.circle_free(self.center(n), 19.0)
-                    || !self.circle_free(self.center(i).lerp(self.center(n), 0.5), 19.0)
-                {
+                if field[n] != u32::MAX {
+                    continue;
+                }
+                let edge_blocked = match (dx, dy) {
+                    (1, 0) => blocked[i][1],
+                    (-1, 0) => blocked[n][1],
+                    (0, 1) => blocked[i][2],
+                    _ => blocked[n][2],
+                };
+                if blocked[n][0] || edge_blocked || Self::solid_tile(self.tiles[i]) {
                     continue;
                 }
                 if field[n] == u32::MAX {
@@ -317,20 +350,59 @@ impl Level {
         }
         field
     }
+    // A moved crate can block a tile's center while leaving room for an actor
+    // near its edge. Attach that actor to a visible neighboring route instead.
+    fn route_anchor(&self, p: Vec2, field: &[u32], radius: f32) -> Option<usize> {
+        let i = self.index(p);
+        if field[i] != u32::MAX && self.clear_line(p, self.center(i), radius) {
+            return Some(i);
+        }
+        let (x, y) = ((i % self.width) as i32, (i / self.width) as i32);
+        let mut best = None;
+        for ny in (y - 1).max(0)..=(y + 1).min(self.height as i32 - 1) {
+            for nx in (x - 1).max(0)..=(x + 1).min(self.width as i32 - 1) {
+                let n = ny as usize * self.width + nx as usize;
+                if field[n] != u32::MAX
+                    && best.is_none_or(|b| field[n] < field[b])
+                    && self.clear_line(p, self.center(n), radius)
+                {
+                    best = Some(n);
+                }
+            }
+        }
+        best
+    }
+
+    pub fn route_reachable(&self, p: Vec2, target: Vec2, field: &[u32], radius: f32) -> bool {
+        field[self.index(p)] != u32::MAX
+            || self.route_anchor(p, field, radius).is_some()
+            || self.clear_line(p, target, radius)
+    }
+
     pub fn waypoint(&self, p: Vec2, target: Vec2, field: &[u32], radius: f32) -> Vec2 {
         if self.clear_line(p, target, radius) {
             return target;
         }
-        let i = self.index(p);
-        let (x, y) = ((i % self.width) as i32, (i / self.width) as i32);
-        let mut best = i;
-        for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
-            if self.solid(x + dx, y + dy) {
-                continue;
+        let Some(mut best) = self.route_anchor(p, field, radius) else {
+            return p;
+        };
+        // Look a few tiles ahead along the descending field, skipping intermediate
+        // centers only when the whole body can reach the next point directly.
+        // This rounds tree detours without cutting corners or crossing cover.
+        for _ in 0..4 {
+            let (x, y) = ((best % self.width) as i32, (best / self.width) as i32);
+            let previous = best;
+            for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                if self.solid(x + dx, y + dy) {
+                    continue;
+                }
+                let n = (y + dy) as usize * self.width + (x + dx) as usize;
+                if field[n] < field[best] && self.clear_line(p, self.center(n), radius) {
+                    best = n;
+                }
             }
-            let n = (y + dy) as usize * self.width + (x + dx) as usize;
-            if field[n] < field[best] && self.clear_line(p, self.center(n), radius) {
-                best = n;
+            if best == previous {
+                break;
             }
         }
         self.center(best)

@@ -101,6 +101,56 @@ fn moved_cover_changes_navigation_and_still_allows_a_detour() {
     assert!(p.distance(target) < 3.0);
 }
 #[test]
+fn enemies_route_from_free_positions_beside_offset_crates() {
+    let mut l = terrain();
+    let target = vec2(456.0, 168.0);
+    for offset in [vec2(-12.0, 0.0), vec2(18.0, 15.0), vec2(0.0, 24.0)] {
+        l.crates[0] = vec2(312.0, 120.0) + offset;
+        let field = l.flow_field(target);
+        for radius in [13.0, 19.0] {
+            for y in (72..=216).step_by(12) {
+                for x in (216..=408).step_by(12) {
+                    let start = vec2(x as f32, y as f32);
+                    if !l.circle_free(start, radius) {
+                        continue;
+                    }
+                    assert!(l.route_reachable(start, target, &field, radius));
+                    let mut p = start;
+                    for _ in 0..600 {
+                        let goal = l.waypoint(p, target, &field, radius);
+                        p = l.slide(p, (goal - p).normalize_or_zero() * 2.0, radius);
+                        assert!(l.circle_free(p, radius));
+                        if p.distance(target) < 3.0 {
+                            break;
+                        }
+                    }
+                    assert!(
+                        p.distance(target) < 3.0,
+                        "offset {offset:?}, radius {radius}, from {start:?}: stuck at {p:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn nearby_routes_do_not_reach_through_a_sealed_crate_barrier() {
+    let mut l = terrain();
+    l.crates = (0..5)
+        .map(|y| vec2(300.0, 68.0 + y as f32 * 40.0))
+        .collect();
+    let target = vec2(456.0, 168.0);
+    let field = l.flow_field(target);
+    for radius in [13.0, 19.0] {
+        let p = vec2(250.0, 120.0);
+        assert!(l.circle_free(p, radius));
+        assert!(!l.route_reachable(p, target, &field, radius));
+        assert_eq!(l.waypoint(p, target, &field, radius), p);
+    }
+}
+
+#[test]
 fn all_temporary_powerups_activate_expire_and_quad_applies_to_all_weapons() {
     for (weapon, spec) in WEAPONS.iter().enumerate() {
         let mut g = Game::new(terrain(), false);

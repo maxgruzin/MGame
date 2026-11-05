@@ -1,0 +1,21 @@
+services:
+  party:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    ports:
+      - "${PARTY_PORT:-7777}:7777/tcp"
+    command: ["--bind", "0.0.0.0:7777", "--arena", "${PARTY_ARENA:-0}"]
+    init: true
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 64
+    mem_limit: 512m
+    stop_grace_period: 5s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

@@ -1,10 +1,12 @@
 use crate::level::{Level, TILE};
+use crate::waves;
 use macroquad::prelude::*;
+use serde::{Deserialize, Serialize};
 
 pub const STEP: f32 = 1.0 / 120.0;
 pub const PLAYER_RADIUS: f32 = 13.0;
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, Debug, Serialize, Deserialize)]
 pub struct Input {
     pub movement: Vec2,
     pub aim: Vec2,
@@ -40,17 +42,17 @@ pub const WEAPONS: [Weapon; 5] = [
         magazine: 7,
         interval: 0.58,
         reload: 1.55,
-        damage: 19.0,
+        damage: 21.0,
         pellets: 8,
         spread: 0.25,
         speed: 920.0,
     },
     Weapon {
         name: "RAIL CARBINE",
-        magazine: 6,
-        interval: 0.48,
-        reload: 1.4,
-        damage: 110.0,
+        magazine: 8,
+        interval: 0.36,
+        reload: 1.05,
+        damage: 230.0,
         pellets: 1,
         spread: 0.0,
         speed: 1900.0,
@@ -76,11 +78,15 @@ pub const WEAPONS: [Weapon; 5] = [
         speed: 0.0,
     },
 ];
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Player {
+    pub slot: u8,
+    pub connected: bool,
     pub pos: Vec2,
     pub previous: Vec2,
     pub velocity: Vec2,
     pub aim: Vec2,
+    pub walk_distance: f32,
     pub health: f32,
     pub weapon: usize,
     pub ammo: [u32; 5],
@@ -94,7 +100,7 @@ pub struct Player {
     pub immortal: f32,
     pub haste: f32,
 }
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
 pub enum Kind {
     Runner,
     Gunner,
@@ -102,10 +108,55 @@ pub enum Kind {
     Hunter,
     Bomber,
     Siege,
+    Stalker,
+    Lancer,
+    Sentinel,
+    ThornTyrant,
+    BroodMatriarch,
+    Overlord,
 }
 impl Kind {
+    pub fn is_boss(self) -> bool {
+        matches!(
+            self,
+            Self::ThornTyrant | Self::BroodMatriarch | Self::Overlord
+        )
+    }
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Runner => "RAVAGER",
+            Self::Gunner => "SPITTER",
+            Self::Brute => "THORNBACK",
+            Self::Hunter => "HUNTER",
+            Self::Bomber => "BROOD BOMBER",
+            Self::Siege => "SIEGE BEAST",
+            Self::Stalker => "STALKER",
+            Self::Lancer => "LANCER",
+            Self::Sentinel => "SENTINEL",
+            Self::ThornTyrant => "THORN TYRANT",
+            Self::BroodMatriarch => "BROOD MATRIARCH",
+            Self::Overlord => "OVERLORD",
+        }
+    }
+    pub fn base_health(self) -> f32 {
+        match self {
+            Self::Runner => 48.0,
+            Self::Gunner => 65.0,
+            Self::Brute => 190.0,
+            Self::Hunter => 110.0,
+            Self::Bomber => 150.0,
+            Self::Siege => 310.0,
+            Self::Stalker => 90.0,
+            Self::Lancer => 135.0,
+            Self::Sentinel => 210.0,
+            Self::ThornTyrant => 1980.0,
+            Self::BroodMatriarch => 3150.0,
+            Self::Overlord => 4800.0,
+        }
+    }
     pub fn radius(self) -> f32 {
-        if matches!(self, Self::Brute | Self::Siege) {
+        // Boss artwork is larger, but fits the same narrow forest paths as brutes.
+        if self.is_boss() || matches!(self, Self::Brute | Self::Siege | Self::Sentinel) {
             19.0
         } else {
             13.0
@@ -119,9 +170,16 @@ impl Kind {
             Self::Hunter => Color::from_hex(0xa7e3ff),
             Self::Bomber => Color::from_hex(0xc7f272),
             Self::Siege => Color::from_hex(0xff814f),
+            Self::Stalker => Color::from_hex(0x63f5d0),
+            Self::Lancer => Color::from_hex(0xe78bff),
+            Self::Sentinel => Color::from_hex(0x78b8ff),
+            Self::ThornTyrant => Color::from_hex(0xffc15c),
+            Self::BroodMatriarch => Color::from_hex(0xdd88ff),
+            Self::Overlord => Color::from_hex(0xff6355),
         }
     }
 }
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Enemy {
     pub pos: Vec2,
     pub previous: Vec2,
@@ -133,9 +191,11 @@ pub struct Enemy {
     pub aim: Vec2,
     pub phase: f32,
 }
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Bullet {
     pub pos: Vec2,
     pub previous: Vec2,
+    pub origin: Vec2,
     pub velocity: Vec2,
     pub damage: f32,
     pub life: f32,
@@ -143,6 +203,7 @@ pub struct Bullet {
     pub rail: bool,
     pub blast_radius: f32,
 }
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Grenade {
     pub pos: Vec2,
     pub origin: Vec2,
@@ -152,6 +213,7 @@ pub struct Grenade {
     pub damage: f32,
     pub hostile: bool,
 }
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Blast {
     pub pos: Vec2,
     pub radius: f32,
@@ -166,12 +228,13 @@ pub struct Particle {
     pub color: Color,
     pub size: f32,
 }
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Pickup {
     pub pos: Vec2,
     pub life: f32,
     pub kind: PickupKind,
 }
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub enum PickupKind {
     Health,
     Quad,
@@ -196,12 +259,13 @@ impl PickupKind {
         }
     }
 }
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Spawn {
     pub pos: Vec2,
     pub timer: f32,
     pub kind: Kind,
 }
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Serialize, Deserialize)]
 pub enum SoundEvent {
     Rifle,
     Shotgun,
@@ -210,12 +274,17 @@ pub enum SoundEvent {
     Hurt,
     Dash,
     Wave,
+    Boss,
     Explosion,
     Pickup,
 }
 pub struct Game {
     pub level: Level,
     pub player: Player,
+    pub allies: Vec<Player>,
+    /// Zero for solo; fixed starting headcount for online difficulty.
+    pub party_size: usize,
+    pub beacons: Vec<ReviveBeacon>,
     pub enemies: Vec<Enemy>,
     pub bullets: Vec<Bullet>,
     pub grenades: Vec<Grenade>,
@@ -227,6 +296,7 @@ pub struct Game {
     pub remaining: u32,
     pub intermission: f32,
     pub spawn_timer: f32,
+    pub wave_announcement: f32,
     pub score: u32,
     pub kills: u32,
     pub combo: u32,
@@ -238,8 +308,18 @@ pub struct Game {
     pub victory: bool,
     pub endless: bool,
     field: Vec<u32>,
+    ally_fields: Vec<Vec<u32>>,
     field_timer: f32,
     rng: u64,
+}
+
+pub const REVIVE_RADIUS: f32 = 64.0;
+pub const REVIVE_SECONDS: f32 = 10.0;
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct ReviveBeacon {
+    pub pos: Vec2,
+    pub progress: f32,
 }
 
 impl Game {
@@ -249,13 +329,16 @@ impl Game {
         Self {
             level,
             player: Player {
+                slot: 0,
+                connected: true,
                 pos,
                 previous: pos,
                 velocity: Vec2::ZERO,
                 aim: Vec2::X,
+                walk_distance: 0.0,
                 health: 100.0,
                 weapon: 0,
-                ammo: [30, 7, 6, 4, 5],
+                ammo: WEAPONS.map(|weapon| weapon.magazine),
                 cooldown: 0.0,
                 reload: 0.0,
                 dash_cooldown: 0.0,
@@ -266,6 +349,9 @@ impl Game {
                 immortal: 0.0,
                 haste: 0.0,
             },
+            allies: vec![],
+            party_size: 0,
+            beacons: vec![],
             enemies: vec![],
             bullets: vec![],
             grenades: vec![],
@@ -277,6 +363,7 @@ impl Game {
             remaining: 0,
             intermission: 2.0,
             spawn_timer: 0.0,
+            wave_announcement: 0.0,
             score: 0,
             kills: 0,
             combo: 0,
@@ -288,10 +375,165 @@ impl Game {
             victory: false,
             endless,
             field,
+            ally_fields: vec![],
             field_timer: 0.0,
             rng: 0xabc123def456,
         }
     }
+    pub fn players(&self) -> impl Iterator<Item = &Player> {
+        std::iter::once(&self.player).chain(self.allies.iter())
+    }
+
+    pub fn party_stat_scale(&self) -> f32 {
+        1.0 + self.party_size.saturating_sub(1) as f32 * 0.25
+    }
+
+    pub fn team_alive(&self) -> bool {
+        self.players().any(|p| p.connected && p.health > 0.0)
+    }
+
+    fn spawn_reachable(&self, index: usize) -> bool {
+        (self.player.connected && self.player.health > 0.0 && self.field[index] != u32::MAX)
+            || self
+                .allies
+                .iter()
+                .zip(&self.ally_fields)
+                .any(|(p, field)| p.connected && p.health > 0.0 && field[index] != u32::MAX)
+    }
+
+    fn distance_to_team(&self, pos: Vec2) -> f32 {
+        self.players()
+            .filter(|p| p.connected && p.health > 0.0)
+            .map(|p| p.pos.distance(pos))
+            .fold(f32::INFINITY, f32::min)
+    }
+
+    pub fn new_party(level: Level, endless: bool, weapons: &[usize]) -> Result<Self, String> {
+        if weapons.is_empty() || weapons.len() > 8 || weapons.iter().any(|&w| w >= WEAPONS.len()) {
+            return Err("A party requires 1-8 players with valid weapons".into());
+        }
+        let mut game = Self::new(level, endless);
+        game.party_size = weapons.len();
+        game.player.weapon = weapons[0];
+        for (index, &weapon) in weapons.iter().enumerate().skip(1) {
+            let Some(pos) = game.free_party_spawn(game.level.spawn) else {
+                return Err("The arena has no safe room for this party".into());
+            };
+            let mut player = game.player.clone();
+            player.slot = index as u8;
+            player.weapon = weapon;
+            player.pos = pos;
+            player.previous = pos;
+            game.ally_fields.push(game.level.flow_field(pos));
+            game.allies.push(player);
+        }
+        Ok(game)
+    }
+
+    fn free_party_spawn(&self, origin: Vec2) -> Option<Vec2> {
+        let field = self.level.flow_field(origin);
+        (0..self.level.tiles.len())
+            .filter(|&i| field[i] != u32::MAX)
+            .map(|i| self.level.center(i))
+            .filter(|&p| {
+                self.level.circle_free(p, PLAYER_RADIUS)
+                    && p.distance(origin) <= TILE * 5.0
+                    && self
+                        .players()
+                        .filter(|a| a.connected && a.health > 0.0)
+                        .all(|a| a.pos.distance(p) >= PLAYER_RADIUS * 2.0 + 4.0)
+                    && self
+                        .enemies
+                        .iter()
+                        .all(|e| e.pos.distance(p) > e.kind.radius() + PLAYER_RADIUS + 10.0)
+            })
+            .min_by(|a, b| {
+                a.distance_squared(origin)
+                    .total_cmp(&b.distance_squared(origin))
+            })
+    }
+
+    /// Inputs are indexed by the immutable starting roster. The world advances once.
+    pub fn update_party(&mut self, inputs: &[Input], dt: f32) {
+        if !self.team_alive() || self.victory {
+            return;
+        }
+        self.begin_frame(dt);
+        self.update_player(inputs.first().copied().unwrap_or_default(), dt);
+        for i in 0..self.allies.len() {
+            std::mem::swap(&mut self.player, &mut self.allies[i]);
+            self.update_player(inputs.get(i + 1).copied().unwrap_or_default(), dt);
+            std::mem::swap(&mut self.player, &mut self.allies[i]);
+        }
+        self.update_world(dt);
+    }
+
+    pub fn disconnect_player(&mut self, slot: u8) {
+        for player in std::iter::once(&mut self.player).chain(self.allies.iter_mut()) {
+            if player.slot == slot {
+                player.connected = false;
+                player.health = 0.0;
+                player.velocity = Vec2::ZERO;
+            }
+        }
+    }
+
+    fn hurt_player(&mut self, index: usize, damage: f32) {
+        if index == 0 {
+            self.hurt(damage);
+        } else {
+            std::mem::swap(&mut self.player, &mut self.allies[index - 1]);
+            self.hurt(damage);
+            std::mem::swap(&mut self.player, &mut self.allies[index - 1]);
+        }
+    }
+
+    fn update_revives(&mut self, dt: f32) {
+        if self.party_size == 0 {
+            return;
+        }
+        let mut beacons = std::mem::take(&mut self.beacons);
+        for beacon in &mut beacons {
+            let fallen = self.players().position(|p| p.connected && p.health <= 0.0);
+            let held = self.players().any(|p| {
+                p.connected
+                    && p.health > 0.0
+                    && p.pos.distance(beacon.pos) <= REVIVE_RADIUS
+                    && self.level.clear_shot(p.pos, beacon.pos)
+            });
+            let contested = self.enemies.iter().any(|e| {
+                e.health > 0.0 && e.pos.distance(beacon.pos) < REVIVE_RADIUS + e.kind.radius()
+            });
+            if fallen.is_some() && held && !contested {
+                beacon.progress += dt;
+            } else {
+                beacon.progress = 0.0;
+            }
+            if beacon.progress + 0.0001 >= REVIVE_SECONDS {
+                if let (Some(index), Some(pos)) = (fallen, self.free_party_spawn(beacon.pos)) {
+                    let player = if index == 0 {
+                        &mut self.player
+                    } else {
+                        &mut self.allies[index - 1]
+                    };
+                    player.health = 60.0;
+                    player.pos = pos;
+                    player.previous = pos;
+                    player.velocity = Vec2::ZERO;
+                    player.invulnerable = 3.0;
+                    player.dash_time = 0.0;
+                    player.reload = 0.0;
+                    player.ammo[player.weapon] = WEAPONS[player.weapon].magazine;
+                    self.sounds.push(SoundEvent::Pickup);
+                    self.field_timer = 0.0;
+                    beacon.progress = -1.0;
+                }
+            }
+        }
+        beacons.retain(|b| b.progress >= 0.0);
+        self.beacons = beacons;
+    }
+
     fn random(&mut self) -> f32 {
         self.rng ^= self.rng << 13;
         self.rng ^= self.rng >> 7;
@@ -321,12 +563,23 @@ impl Game {
         if self.player.health <= 0.0 || self.victory {
             return;
         }
+        self.begin_frame(dt);
+        self.update_player(input, dt);
+        self.update_world(dt);
+    }
+    fn begin_frame(&mut self, dt: f32) {
         self.time += dt;
+        self.wave_announcement = (self.wave_announcement - dt).max(0.0);
         self.shake = (self.shake - dt * 18.0).max(0.0);
         self.hit_flash = (self.hit_flash - dt).max(0.0);
         self.combo_timer -= dt;
         if self.combo_timer <= 0.0 {
             self.combo = 0;
+        }
+    }
+    fn update_player(&mut self, input: Input, dt: f32) {
+        if self.player.health <= 0.0 || !self.player.connected {
+            return;
         }
         self.player.previous = self.player.pos;
         self.player.cooldown = (self.player.cooldown - dt).max(0.0);
@@ -335,7 +588,10 @@ impl Game {
         self.player.quad = (self.player.quad - dt).max(0.0);
         self.player.immortal = (self.player.immortal - dt).max(0.0);
         self.player.haste = (self.player.haste - dt).max(0.0);
-        if let Some(w) = input.weapon.filter(|&w| w < WEAPONS.len()) {
+        if let Some(w) = input
+            .weapon
+            .filter(|&w| w < WEAPONS.len() && self.party_size == 0)
+        {
             if w != self.player.weapon {
                 self.player.weapon = w;
                 self.player.reload = 0.0;
@@ -379,10 +635,18 @@ impl Game {
             .enemies
             .iter()
             .map(|e| (e.pos, e.kind.radius()))
+            .chain(
+                self.allies
+                    .iter()
+                    .filter(|p| p.connected && p.health > 0.0)
+                    .map(|p| (p.pos, PLAYER_RADIUS)),
+            )
             .collect();
         self.player.pos =
             self.level
                 .push_slide(self.player.pos, velocity * dt, PLAYER_RADIUS, &actors);
+        self.player.walk_distance =
+            (self.player.walk_distance + self.player.previous.distance(self.player.pos)) % 160.0;
         let weapon = WEAPONS[self.player.weapon];
         if input.reload
             && self.player.ammo[self.player.weapon] < weapon.magazine
@@ -397,9 +661,16 @@ impl Game {
                 self.shoot();
             }
         }
+    }
+    fn update_world(&mut self, dt: f32) {
         self.field_timer -= dt;
         if self.field_timer <= 0.0 {
             self.field = self.level.flow_field(self.player.pos);
+            self.ally_fields = self
+                .allies
+                .iter()
+                .map(|p| self.level.flow_field(p.pos))
+                .collect();
             self.field_timer = 0.16;
         }
         self.update_waves(dt);
@@ -423,9 +694,20 @@ impl Game {
             self.kills += 1;
             self.combo += 1;
             self.combo_timer = 3.0;
-            self.score +=
-                (if kind == Kind::Brute { 150 } else { 75 }) * (1 + self.combo.min(20) / 5);
+            self.score += (if kind.is_boss() {
+                1500
+            } else if kind == Kind::Brute {
+                150
+            } else {
+                75
+            }) * (1 + self.combo.min(20) / 5);
             self.burst(pos, kind.color(), 22, 180.0);
+            if self.party_size > 0
+                && self.beacons.is_empty()
+                && self.players().any(|p| p.connected && p.health <= 0.0)
+            {
+                self.beacons.push(ReviveBeacon { pos, progress: 0.0 });
+            }
             let roll = self.random();
             if roll < 0.24 {
                 let kind = if roll < 0.12 {
@@ -446,28 +728,39 @@ impl Game {
         }
         for pickup in &mut self.pickups {
             pickup.life -= dt;
-            if pickup.pos.distance(self.player.pos) < 36.0
-                && (pickup.kind != PickupKind::Health || self.player.health < 100.0)
-                && self.level.clear_shot(pickup.pos, self.player.pos)
-            {
-                match pickup.kind {
-                    PickupKind::Health => {
-                        self.player.health = (self.player.health + 30.0).min(100.0)
+            for player in std::iter::once(&mut self.player).chain(self.allies.iter_mut()) {
+                if player.health > 0.0
+                    && player.connected
+                    && pickup.life > 0.0
+                    && pickup.pos.distance(player.pos) < 36.0
+                    && (pickup.kind != PickupKind::Health || player.health < 100.0)
+                    && self.level.clear_shot(pickup.pos, player.pos)
+                {
+                    match pickup.kind {
+                        PickupKind::Health => player.health = (player.health + 30.0).min(100.0),
+                        PickupKind::Quad => player.quad = 12.0,
+                        PickupKind::Immortal => player.immortal = 8.0,
+                        PickupKind::Haste => player.haste = 10.0,
                     }
-                    PickupKind::Quad => self.player.quad = 12.0,
-                    PickupKind::Immortal => self.player.immortal = 8.0,
-                    PickupKind::Haste => self.player.haste = 10.0,
+                    pickup.life = 0.0;
+                    self.sounds.push(SoundEvent::Pickup);
                 }
-                pickup.life = 0.0;
-                self.sounds.push(SoundEvent::Pickup);
             }
         }
         self.pickups.retain(|p| p.life > 0.0);
-        if self.level.medical.iter().any(|p| {
-            p.distance(self.player.pos) < 34.0 && self.level.clear_shot(*p, self.player.pos)
-        }) {
-            self.player.health = (self.player.health + 4.0 * dt).min(100.0);
+        for player in std::iter::once(&mut self.player).chain(self.allies.iter_mut()) {
+            if player.health > 0.0
+                && player.connected
+                && self
+                    .level
+                    .medical
+                    .iter()
+                    .any(|p| p.distance(player.pos) < 34.0 && self.level.clear_shot(*p, player.pos))
+            {
+                player.health = (player.health + 4.0 * dt).min(100.0);
+            }
         }
+        self.update_revives(dt);
         for p in &mut self.particles {
             p.life -= dt;
             p.pos += p.velocity * dt;
@@ -502,6 +795,7 @@ impl Game {
             self.bullets.push(Bullet {
                 pos,
                 previous: pos,
+                origin: pos,
                 velocity: direction * w.speed,
                 damage,
                 life: if self.player.weapon == 3 { 2.2 } else { 1.2 },
@@ -517,27 +811,54 @@ impl Game {
             85.0,
         );
     }
+    pub fn between_waves(&self) -> bool {
+        self.remaining == 0 && self.enemies.is_empty() && self.spawns.is_empty()
+    }
+    pub fn boss_warning(&self) -> Option<(u32, Kind)> {
+        if self.victory || !self.team_alive() {
+            return None;
+        }
+        let wave = if self.between_waves() {
+            self.wave + 1
+        } else if self.wave_announcement > 0.0 {
+            self.wave
+        } else {
+            return None;
+        };
+        waves::boss_for_wave(wave).map(|boss| (wave, boss))
+    }
     fn update_waves(&mut self, dt: f32) {
         if self.remaining == 0 && self.enemies.is_empty() && self.spawns.is_empty() {
-            if self.wave >= 6 && !self.endless {
+            if self.wave >= waves::CAMPAIGN_WAVES && !self.endless {
                 self.victory = true;
                 return;
             }
             self.intermission -= dt;
             if self.intermission <= 0.0 {
                 self.wave += 1;
-                self.remaining = 7 + self.wave * 4;
+                self.remaining =
+                    waves::party_roster(self.wave, self.party_size.max(1)).len() as u32;
                 self.spawn_timer = 0.0;
                 self.intermission = 4.0;
-                self.sounds.push(SoundEvent::Wave);
-                self.player.health = (self.player.health + 10.0).min(100.0);
+                self.wave_announcement = 3.5;
+                self.sounds
+                    .push(if waves::boss_for_wave(self.wave).is_some() {
+                        SoundEvent::Boss
+                    } else {
+                        SoundEvent::Wave
+                    });
+                for player in std::iter::once(&mut self.player).chain(self.allies.iter_mut()) {
+                    if player.health > 0.0 && player.connected {
+                        player.health = (player.health + 10.0).min(100.0);
+                    }
+                }
                 let kind = match self.wave % 3 {
                     1 => PickupKind::Quad,
                     2 => PickupKind::Haste,
                     _ => PickupKind::Immortal,
                 };
                 let supply = (0..self.level.tiles.len())
-                    .filter(|&i| self.field[i] != u32::MAX)
+                    .filter(|&i| self.spawn_reachable(i))
                     .map(|i| self.level.center(i))
                     .filter(|&p| self.level.circle_free(p, 18.0))
                     .min_by(|a, b| {
@@ -557,7 +878,7 @@ impl Game {
         self.spawn_timer -= dt;
         if self.remaining > 0
             && self.spawn_timer <= 0.0
-            && self.enemies.len() + self.spawns.len() < 48
+            && self.enemies.len() + self.spawns.len() < 48 * self.party_size.max(1)
         {
             let mut candidates: Vec<Vec2> = self
                 .level
@@ -565,24 +886,30 @@ impl Game {
                 .iter()
                 .copied()
                 .filter(|p| {
-                    self.field[self.level.index(*p)] != u32::MAX
+                    self.spawn_reachable(self.level.index(*p))
                         && self.level.circle_free(*p, 19.0)
-                        && p.distance(self.player.pos) > TILE * 4.0
+                        && self
+                            .players()
+                            .filter(|p| p.health > 0.0 && p.connected)
+                            .all(|a| p.distance(a.pos) > TILE * 4.0)
                         && self.enemies.iter().all(|e| e.pos.distance(*p) > 38.0)
                         && self.spawns.iter().all(|s| s.pos.distance(*p) > 38.0)
                 })
                 .collect();
             if candidates.is_empty() {
                 let farthest = (0..self.level.tiles.len())
-                    .filter(|&i| self.field[i] != u32::MAX)
-                    .map(|i| self.level.center(i).distance(self.player.pos))
+                    .filter(|&i| self.spawn_reachable(i))
+                    .map(|i| self.distance_to_team(self.level.center(i)))
                     .fold(0.0_f32, f32::max);
                 let safe_distance = (farthest * 0.7).min(TILE * 4.0);
                 candidates = (0..self.level.tiles.len())
-                    .filter(|&i| self.field[i] != u32::MAX)
+                    .filter(|&i| self.spawn_reachable(i))
                     .map(|i| self.level.center(i))
                     .filter(|p| {
-                        p.distance(self.player.pos) > safe_distance
+                        self.players()
+                            .filter(|p| p.health > 0.0 && p.connected)
+                            .all(|a| p.distance(a.pos) > safe_distance)
+                            && self.level.circle_free(*p, 19.0)
                             && self.enemies.iter().all(|e| e.pos.distance(*p) > 42.0)
                             && self.spawns.iter().all(|s| s.pos.distance(*p) > 42.0)
                     })
@@ -590,28 +917,16 @@ impl Game {
             }
             if !candidates.is_empty() {
                 let idx = (self.random() * candidates.len() as f32) as usize % candidates.len();
-                let roll = self.random();
-                let kind = if self.wave >= 6 && roll < 0.18 {
-                    Kind::Siege
-                } else if self.wave >= 5 && roll < 0.36 {
-                    Kind::Bomber
-                } else if self.wave >= 3 && roll < 0.52 {
-                    Kind::Hunter
-                } else if self.wave >= 3 && roll < 0.70 {
-                    Kind::Brute
-                } else if self.wave >= 2 && self.random() < 0.4 {
-                    Kind::Gunner
-                } else {
-                    Kind::Runner
-                };
+                let roster = waves::party_roster(self.wave, self.party_size.max(1));
+                let kind = roster[roster.len() - self.remaining as usize];
                 self.spawns.push(Spawn {
                     pos: candidates[idx],
-                    timer: 0.85,
+                    timer: if kind.is_boss() { 2.4 } else { 0.85 },
                     kind,
                 });
                 self.remaining -= 1;
             }
-            self.spawn_timer = (0.95 - self.wave as f32 * 0.07).max(0.28);
+            self.spawn_timer = waves::spawn_interval(self.wave) / self.party_size.max(1) as f32;
         }
         for s in &mut self.spawns {
             s.timer -= dt;
@@ -626,14 +941,8 @@ impl Game {
             }
         });
         for (pos, kind) in ready {
-            let health = match kind {
-                Kind::Runner => 48.0,
-                Kind::Gunner => 65.0,
-                Kind::Brute => 190.0,
-                Kind::Hunter => 110.0,
-                Kind::Bomber => 150.0,
-                Kind::Siege => 310.0,
-            } * (1.0 + self.wave.saturating_sub(1) as f32 * 0.06);
+            let health =
+                kind.base_health() * waves::health_scale(self.wave) * self.party_stat_scale();
             let phase = self.random() * std::f32::consts::TAU;
             self.enemies.push(Enemy {
                 pos,
@@ -651,18 +960,52 @@ impl Game {
     }
     fn update_enemies(&mut self, dt: f32) {
         let positions: Vec<Vec2> = self.enemies.iter().map(|e| e.pos).collect();
-        let mut damage = 0.0;
+        let targets: Vec<_> = self
+            .players()
+            .map(|p| (p.pos, p.velocity, p.health > 0.0 && p.connected))
+            .collect();
+        let mut damage = vec![0.0; targets.len()];
+        let damage_scale = self.party_stat_scale();
         let mut mortars = vec![];
         for (i, e) in self.enemies.iter_mut().enumerate() {
             e.previous = e.pos;
             e.attack -= dt;
-            let to_player = self.player.pos - e.pos;
+            let Some((target_index, &(target_pos, target_velocity, _))) = targets
+                .iter()
+                .enumerate()
+                .filter(|(index, (_, _, alive))| {
+                    *alive
+                        && self.level.route_reachable(
+                            e.pos,
+                            targets[*index].0,
+                            if *index == 0 {
+                                &self.field
+                            } else {
+                                &self.ally_fields[*index - 1]
+                            },
+                            e.kind.radius(),
+                        )
+                })
+                .min_by(|(_, a), (_, b)| {
+                    a.0.distance_squared(e.pos)
+                        .total_cmp(&b.0.distance_squared(e.pos))
+                })
+            else {
+                continue;
+            };
+            let target_field = if target_index == 0 {
+                &self.field
+            } else {
+                &self.ally_fields[target_index - 1]
+            };
+            let to_player = target_pos - e.pos;
             let distance = to_player.length();
-            let visible = distance < 700.0 && self.level.clear_shot(e.pos, self.player.pos);
-            let waypoint =
-                self.level
-                    .waypoint(e.pos, self.player.pos, &self.field, e.kind.radius());
-            let mut direction = (waypoint - e.pos).normalize_or_zero();
+            let visible = distance < 700.0 && self.level.clear_shot(e.pos, target_pos);
+            let waypoint = self
+                .level
+                .waypoint(e.pos, target_pos, target_field, e.kind.radius());
+            let path_direction = (waypoint - e.pos).normalize_or_zero();
+            let mut direction = path_direction;
             let mut speed = match e.kind {
                 Kind::Runner => 145.0,
                 Kind::Gunner => 110.0,
@@ -670,18 +1013,31 @@ impl Game {
                 Kind::Hunter => 155.0,
                 Kind::Bomber => 95.0,
                 Kind::Siege => 75.0,
+                Kind::Stalker => 190.0,
+                Kind::Lancer => 100.0,
+                Kind::Sentinel => 80.0,
+                Kind::ThornTyrant => 105.0,
+                Kind::BroodMatriarch => 85.0,
+                Kind::Overlord => 95.0,
             };
-            speed *= (1.0 + self.wave as f32 * 0.025).min(1.45);
+            speed *= waves::speed_scale(self.wave);
+            if e.kind == Kind::Stalker && visible && distance > 70.0 {
+                let forward = to_player.normalize_or_zero();
+                direction = forward
+                    + vec2(-forward.y, forward.x) * (self.time * 7.0 + e.phase).sin() * 0.65;
+            }
             let range = match e.kind {
                 Kind::Hunter => 530.0,
                 Kind::Bomber => 470.0,
-                Kind::Siege => 500.0,
+                Kind::Siege | Kind::ThornTyrant => 500.0,
+                Kind::Lancer => 610.0,
+                Kind::Sentinel => 440.0,
+                Kind::BroodMatriarch => 600.0,
+                Kind::Overlord => 650.0,
                 _ => 360.0,
             };
-            if matches!(
-                e.kind,
-                Kind::Gunner | Kind::Hunter | Kind::Bomber | Kind::Siege
-            ) && (visible || e.kind == Kind::Bomber)
+            if !matches!(e.kind, Kind::Runner | Kind::Brute | Kind::Stalker)
+                && (visible || matches!(e.kind, Kind::Bomber | Kind::BroodMatriarch))
                 && distance < range
             {
                 let forward = to_player.normalize_or_zero();
@@ -690,13 +1046,13 @@ impl Game {
                     direction -= forward;
                 }
                 if e.attack <= 0.0 && e.tell <= 0.0 {
-                    e.tell = if e.kind == Kind::Siege || e.kind == Kind::Bomber {
-                        0.9
-                    } else {
-                        0.6
+                    e.tell = match e.kind {
+                        kind if kind.is_boss() => 1.1,
+                        Kind::Siege | Kind::Bomber | Kind::Lancer => 0.9,
+                        _ => 0.6,
                     };
-                    e.aim = (self.player.pos
-                        + self.player.velocity * if e.kind == Kind::Hunter { 0.26 } else { 0.2 }
+                    e.aim = (target_pos
+                        + target_velocity * if e.kind == Kind::Hunter { 0.26 } else { 0.2 }
                         - e.pos)
                         .normalize_or_zero();
                 }
@@ -705,31 +1061,58 @@ impl Game {
                 e.tell -= dt;
                 direction *= 0.25;
                 if e.tell <= 0.0 {
-                    if e.kind == Kind::Bomber {
-                        mortars.push((e.pos, self.player.pos + self.player.velocity * 0.4));
-                    } else {
-                        let count = if e.kind == Kind::Gunner || e.kind == Kind::Hunter {
-                            3
+                    if matches!(e.kind, Kind::Bomber | Kind::BroodMatriarch | Kind::Overlord) {
+                        let target = target_pos + target_velocity * 0.4;
+                        let side = vec2(-e.aim.y, e.aim.x);
+                        if e.kind == Kind::BroodMatriarch {
+                            for offset in [-95.0, 0.0, 95.0] {
+                                mortars.push((e.pos, target + side * offset));
+                            }
                         } else {
-                            1
+                            mortars.push((e.pos, target));
+                        }
+                    }
+                    if !matches!(e.kind, Kind::Bomber | Kind::BroodMatriarch) {
+                        let count = match e.kind {
+                            Kind::Gunner | Kind::Hunter | Kind::Overlord => 3,
+                            Kind::Sentinel => 5,
+                            Kind::ThornTyrant => 12,
+                            _ => 1,
                         };
                         for k in 0..count {
                             let spread = (k as f32 - (count - 1) as f32 * 0.5)
-                                * if e.kind == Kind::Hunter { 0.055 } else { 0.22 };
+                                * match e.kind {
+                                    Kind::Hunter => 0.055,
+                                    Kind::ThornTyrant => std::f32::consts::TAU / count as f32,
+                                    _ => 0.22,
+                                };
                             self.bullets.push(Bullet {
                                 pos: e.pos,
                                 previous: e.pos,
+                                origin: e.pos,
                                 velocity: Vec2::from_angle(e.aim.to_angle() + spread)
                                     * match e.kind {
                                         Kind::Hunter => 650.0,
-                                        Kind::Siege => 300.0,
+                                        Kind::Lancer => 850.0,
+                                        Kind::Siege | Kind::Overlord => 300.0,
+                                        Kind::ThornTyrant => 270.0,
                                         _ => 320.0,
                                     },
-                                damage: if e.kind == Kind::Siege { 38.0 } else { 12.0 },
+                                damage: match e.kind {
+                                    Kind::Siege => 38.0,
+                                    Kind::Overlord => 32.0,
+                                    Kind::Lancer => 24.0,
+                                    Kind::ThornTyrant => 18.0,
+                                    _ => 12.0,
+                                } * damage_scale,
                                 life: 3.0,
                                 hostile: true,
-                                rail: e.kind == Kind::Hunter,
-                                blast_radius: if e.kind == Kind::Siege { 110.0 } else { 0.0 },
+                                rail: matches!(e.kind, Kind::Hunter | Kind::Lancer),
+                                blast_radius: if matches!(e.kind, Kind::Siege | Kind::Overlord) {
+                                    110.0
+                                } else {
+                                    0.0
+                                },
                             });
                         }
                     }
@@ -737,8 +1120,16 @@ impl Game {
                         Kind::Bomber => 3.3,
                         Kind::Siege => 2.5,
                         Kind::Hunter => 2.0,
+                        Kind::Lancer => 2.4,
+                        Kind::Sentinel => 2.3,
+                        Kind::ThornTyrant => 2.1,
+                        Kind::BroodMatriarch => 3.1,
+                        Kind::Overlord => 2.8,
                         _ => 1.7,
                     };
+                    if e.kind.is_boss() && e.health < e.max_health * 0.5 {
+                        e.attack *= 0.75;
+                    }
                 }
             }
             e.aim = if e.tell > 0.0 {
@@ -761,31 +1152,60 @@ impl Game {
                 }
             }
             // Path direction retains priority; separation never fully cancels forward progress.
-            let steering = (direction + separation.clamp_length_max(0.65)).clamp_length_max(1.0);
+            let mut steering =
+                (direction + separation.clamp_length_max(0.65)).clamp_length_max(1.0);
             speed *= self.level.terrain_speed(e.pos);
-            let next = self
+            // Anticipate obstacles before separation, weaving, or strafing pushes
+            // the body into them. Follow the clear route at the intended pace,
+            // including the slower movement during an attack windup.
+            let lookahead = (speed * 0.25).min(e.pos.distance(waypoint));
+            if !self
                 .level
-                .slide(e.pos, steering * speed * dt, e.kind.radius());
-            e.pos = if next.distance_squared(e.pos) < 0.01 && direction.length_squared() > 0.1 {
-                self.level
-                    .slide(e.pos, direction * speed * dt, e.kind.radius())
+                .clear_line(e.pos, e.pos + steering * lookahead, e.kind.radius())
+            {
+                steering = path_direction * direction.length().min(1.0);
+            }
+            let movement = steering * speed * dt;
+            let next = self.level.slide(e.pos, movement, e.kind.radius());
+            e.pos = if next.distance_squared(e.pos) < movement.length_squared() * 0.5
+                && direction.length_squared() > 0.1
+            {
+                self.level.slide(
+                    e.pos,
+                    path_direction * direction.length().min(1.0) * speed * dt,
+                    e.kind.radius(),
+                )
             } else {
                 next
             };
             if distance < e.kind.radius() + PLAYER_RADIUS + 5.0 && e.attack <= 0.0 {
-                damage += if e.kind == Kind::Brute { 22.0 } else { 9.0 };
+                damage[target_index] += if e.kind.is_boss() {
+                    28.0
+                } else if matches!(e.kind, Kind::Brute | Kind::Sentinel) {
+                    22.0
+                } else if e.kind == Kind::Stalker {
+                    12.0
+                } else {
+                    9.0
+                };
                 e.attack = 0.8;
             }
         }
         for (origin, target) in mortars {
-            self.throw_grenade(origin, target, 45.0, true);
+            self.throw_grenade(origin, target, 45.0 * damage_scale, true);
         }
-        if damage > 0.0 {
-            self.hurt(damage);
+        for (index, amount) in damage.into_iter().enumerate() {
+            if amount > 0.0 {
+                self.hurt_player(index, amount * damage_scale);
+            }
         }
     }
     fn hurt(&mut self, damage: f32) {
-        if self.player.invulnerable > 0.0 || self.player.immortal > 0.0 {
+        if self.player.health <= 0.0
+            || !self.player.connected
+            || self.player.invulnerable > 0.0
+            || self.player.immortal > 0.0
+        {
             return;
         }
         self.player.health = (self.player.health - damage).max(0.0);
@@ -797,7 +1217,11 @@ impl Game {
     }
     fn update_bullets(&mut self, dt: f32) {
         let mut impacts = vec![];
-        let mut hurt = 0.0;
+        let targets: Vec<_> = self
+            .players()
+            .map(|p| (p.pos, p.health > 0.0 && p.connected))
+            .collect();
+        let mut hurt = vec![0.0; targets.len()];
         let mut explosions = vec![];
         for b in &mut self.bullets {
             b.previous = b.pos;
@@ -822,11 +1246,13 @@ impl Game {
                     break;
                 }
                 if b.hostile {
-                    if b.pos.distance(self.player.pos) < PLAYER_RADIUS + 3.0 {
+                    if let Some(index) = targets.iter().position(|(pos, alive)| {
+                        *alive && b.pos.distance(*pos) < PLAYER_RADIUS + 3.0
+                    }) {
                         if b.blast_radius > 0.0 {
                             explosions.push((b.pos, b.damage, b.blast_radius, b.hostile));
                         } else {
-                            hurt += b.damage;
+                            hurt[index] += b.damage;
                         }
                         b.life = 0.0;
                         break;
@@ -862,8 +1288,10 @@ impl Game {
                 self.sounds.push(SoundEvent::Hit);
             }
         }
-        if hurt > 0.0 {
-            self.hurt(hurt);
+        for (index, amount) in hurt.into_iter().enumerate() {
+            if amount > 0.0 {
+                self.hurt_player(index, amount);
+            }
         }
     }
 
@@ -920,13 +1348,20 @@ impl Game {
                 }
             }
         }
-        let distance = self.player.pos.distance(pos);
-        if distance < radius + PLAYER_RADIUS && self.level.clear_shot(pos, self.player.pos) {
-            self.hurt(
-                damage
-                    * (1.0 - 0.65 * (distance / radius).min(1.0))
-                    * if hostile { 1.0 } else { 0.25 },
-            );
+        // Party explosives do not damage allies (or their owner). Solo keeps self damage.
+        if hostile || self.party_size == 0 {
+            let targets: Vec<_> = self.players().map(|p| p.pos).collect();
+            for (index, target) in targets.into_iter().enumerate() {
+                let distance = target.distance(pos);
+                if distance < radius + PLAYER_RADIUS && self.level.clear_shot(pos, target) {
+                    self.hurt_player(
+                        index,
+                        damage
+                            * (1.0 - 0.65 * (distance / radius).min(1.0))
+                            * if hostile { 1.0 } else { 0.25 },
+                    );
+                }
+            }
         }
     }
 }
@@ -961,6 +1396,26 @@ mod tests {
             (a.player.pos.distance(a.level.spawn) - b.player.pos.distance(b.level.spawn)).abs()
                 < 0.1
         );
+    }
+    #[test]
+    fn walking_phase_uses_actual_distance_including_wall_collisions() {
+        let mut g = game();
+        let mut traveled = 0.0;
+        for _ in 0..100 {
+            let previous = g.player.pos;
+            g.update(
+                Input {
+                    movement: -Vec2::X,
+                    ..Default::default()
+                },
+                STEP,
+            );
+            traveled += previous.distance(g.player.pos);
+            assert!((g.player.walk_distance - traveled % 160.0).abs() < 0.001);
+        }
+        assert!(traveled > 0.0);
+        assert_eq!(g.player.previous, g.player.pos);
+        assert!(g.player.velocity.length() > 200.0);
     }
     #[test]
     fn shots_cannot_cross_walls() {
@@ -1073,6 +1528,7 @@ mod tests {
         g.bullets.push(Bullet {
             pos: vec2(80.0, 100.0),
             previous: vec2(80.0, 100.0),
+            origin: vec2(80.0, 100.0),
             velocity: vec2(1900.0, 0.0),
             damage: 110.0,
             life: 1.0,
@@ -1086,18 +1542,328 @@ mod tests {
     }
 
     #[test]
-    fn six_wave_objective_and_endless_mode_diverge() {
+    fn twenty_wave_objective_and_endless_mode_diverge() {
         let mut finite = game();
-        finite.wave = 6;
+        finite.wave = waves::CAMPAIGN_WAVES;
         finite.update(Input::default(), STEP);
         assert!(finite.victory);
         let mut endless = game();
-        endless.wave = 6;
+        endless.wave = waves::CAMPAIGN_WAVES;
         endless.endless = true;
         endless.intermission = 0.0;
         endless.update(Input::default(), STEP);
         assert!(!endless.victory);
-        assert_eq!(endless.wave, 7);
+        assert_eq!(endless.wave, waves::CAMPAIGN_WAVES + 1);
+    }
+
+    #[test]
+    fn full_campaign_spawns_each_boss_once_and_only_finishes_after_twenty() {
+        let mut g = game();
+        let mut bosses = vec![];
+        for wave in 1..=waves::CAMPAIGN_WAVES {
+            g.intermission = 0.0;
+            g.update_waves(STEP);
+            assert_eq!(g.wave, wave);
+            assert!(!g.victory);
+            let mut spawned = 0;
+            for _ in 0..12000 {
+                g.update_waves(STEP);
+                for enemy in g.enemies.drain(..) {
+                    assert!(g.level.circle_free(enemy.pos, enemy.kind.radius()));
+                    spawned += 1;
+                    if enemy.kind.is_boss() {
+                        bosses.push((wave, enemy.kind));
+                    }
+                }
+                if g.between_waves() {
+                    break;
+                }
+            }
+            assert!(g.between_waves(), "wave {wave} stalled");
+            assert_eq!(spawned, waves::roster(wave).len());
+        }
+        g.update_waves(STEP);
+        assert!(g.victory);
+        assert_eq!(
+            bosses,
+            vec![
+                (7, Kind::ThornTyrant),
+                (15, Kind::BroodMatriarch),
+                (20, Kind::Overlord)
+            ]
+        );
+    }
+
+    #[test]
+    fn spawned_bosses_have_triple_health_with_wave_scaling() {
+        for (wave, kind, previous_health) in [
+            (7, Kind::ThornTyrant, 660.0),
+            (15, Kind::BroodMatriarch, 1050.0),
+            (20, Kind::Overlord, 1600.0),
+        ] {
+            let mut g = game();
+            g.wave = wave;
+            for kind in [kind, Kind::Runner] {
+                g.spawns.push(Spawn {
+                    pos: vec2(350.0, 120.0),
+                    timer: 0.0,
+                    kind,
+                });
+            }
+            g.update_waves(STEP);
+            let expected = previous_health * 3.0 * waves::health_scale(wave);
+            assert_eq!(g.enemies[0].health, expected);
+            assert_eq!(g.enemies[0].max_health, expected);
+            assert_eq!(g.enemies[1].health, 48.0 * waves::health_scale(wave));
+        }
+    }
+
+    #[test]
+    fn every_enemy_moves_ten_percent_faster_on_open_ground() {
+        let border = "#".repeat(32);
+        let floor = format!("#{}#", ".".repeat(30));
+        let markers = format!("#P{}E#", ".".repeat(28));
+        let level = Level::parse(
+            "open",
+            &[border.clone(), markers, floor.clone(), floor, border].join("\n"),
+        )
+        .unwrap();
+        for (kind, previous_speed) in [
+            (Kind::Runner, 145.0),
+            (Kind::Gunner, 110.0),
+            (Kind::Brute, 85.0),
+            (Kind::Hunter, 155.0),
+            (Kind::Bomber, 95.0),
+            (Kind::Siege, 75.0),
+            (Kind::Stalker, 190.0),
+            (Kind::Lancer, 100.0),
+            (Kind::Sentinel, 80.0),
+            (Kind::ThornTyrant, 105.0),
+            (Kind::BroodMatriarch, 85.0),
+            (Kind::Overlord, 95.0),
+        ] {
+            let mut g = Game::new(level.clone(), false);
+            g.wave = 1;
+            let start = g.level.portals[0];
+            g.enemies.push(monster(start, kind));
+            for _ in 0..60 {
+                g.update_enemies(STEP);
+            }
+            let travelled = start.distance(g.enemies[0].pos);
+            assert!(
+                (travelled - previous_speed * 1.1 * 0.5).abs() < 0.01,
+                "{kind:?}: {travelled}"
+            );
+        }
+    }
+
+    #[test]
+    fn stalker_takes_the_clear_route_instead_of_weaving_into_a_tree() {
+        let level = Level::parse(
+            "tree",
+            "############\n#P........E#\n#....T.....#\n#..........#\n#..........#\n############",
+        )
+        .unwrap();
+        let mut g = Game::new(level, false);
+        g.player.pos = vec2(72.0, 84.0);
+        g.field = g.level.flow_field(g.player.pos);
+        let start = vec2(312.0, 84.0);
+        assert!(g.level.clear_shot(start, g.player.pos));
+        assert!(!g
+            .level
+            .clear_line(start, g.player.pos, Kind::Stalker.radius()));
+        let mut enemy = monster(start, Kind::Stalker);
+        enemy.phase = -std::f32::consts::FRAC_PI_2;
+        g.enemies.push(enemy);
+        for frame in 0..24 {
+            g.time = frame as f32 * STEP;
+            g.update_enemies(STEP);
+            assert!(g
+                .level
+                .circle_free(g.enemies[0].pos, Kind::Stalker.radius()));
+        }
+        assert!(
+            g.enemies[0].pos.x < 285.0,
+            "stalker stalled at {:?}",
+            g.enemies[0].pos
+        );
+        assert!(
+            g.enemies[0].pos.y < 84.0,
+            "stalker should go above the tree"
+        );
+    }
+
+    #[test]
+    fn crowded_enemies_detour_around_trees_without_slow_wall_sliding() {
+        let level = Level::parse(
+            "trees",
+            "############\n#P........E#\n#....T.....#\n#....T.....#\n#..........#\n############",
+        )
+        .unwrap();
+        for (kind, speed) in [(Kind::Runner, 145.0), (Kind::Brute, 85.0)] {
+            let mut g = Game::new(level.clone(), false);
+            let start = vec2(288.0 + kind.radius(), 168.0);
+            g.enemies.push(monster(start, kind));
+            g.enemies.push(monster(start + vec2(15.0, 15.0), kind));
+            let mut slow_steps = 0;
+            for frame in 0..240 {
+                g.time = frame as f32 * STEP;
+                let before = g.enemies[0].pos;
+                g.update_enemies(STEP);
+                let travelled = before.distance(g.enemies[0].pos);
+                if travelled < speed * 1.1 * STEP * 0.7 {
+                    slow_steps += 1;
+                }
+                for enemy in &g.enemies {
+                    assert!(g.level.circle_free(enemy.pos, kind.radius()));
+                }
+            }
+            assert!(slow_steps < 12, "{kind:?}: {slow_steps} slow steps");
+            assert!(
+                g.enemies[0].pos.x < 240.0 - kind.radius(),
+                "{kind:?}: failed to round trees at {:?}",
+                g.enemies[0].pos
+            );
+        }
+    }
+
+    #[test]
+    fn enemies_escape_tiles_blocked_by_moved_crates() {
+        let level = Level::parse(
+            "moved cover",
+            "############\n#.........E#\n#........P.#\n#..........#\n#..........#\n############",
+        )
+        .unwrap();
+        for kind in [Kind::Runner, Kind::Brute] {
+            for party in [false, true] {
+                let mut g = Game::new(level.clone(), false);
+                if party {
+                    g = Game::new_party(level.clone(), false, &[0, 0]).unwrap();
+                    g.player.health = 0.0;
+                }
+                g.level.crates.push(vec2(300.0, 120.0));
+                g.field = g.level.flow_field(g.player.pos);
+                g.ally_fields = g.allies.iter().map(|p| g.level.flow_field(p.pos)).collect();
+                let start = vec2(250.0, 120.0);
+                assert!(g.level.circle_free(start, kind.radius()));
+                assert_eq!(g.field[g.level.index(start)], u32::MAX);
+                g.enemies.push(monster(start, kind));
+                for frame in 0..720 {
+                    g.time = frame as f32 * STEP;
+                    g.update_enemies(STEP);
+                    assert!(g.level.circle_free(g.enemies[0].pos, kind.radius()));
+                }
+                assert!(
+                    g.enemies[0].pos.x > 350.0,
+                    "{kind:?}, party {party}: stuck at {:?}",
+                    g.enemies[0].pos
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn clear_ground_preserves_slow_strafing_and_attack_windups() {
+        for winding_up in [false, true] {
+            let mut g = game();
+            let start = vec2(350.0, 120.0);
+            let mut enemy = monster(start, Kind::Gunner);
+            enemy.attack = 10.0;
+            enemy.phase = (0.4_f32 / 0.75).asin();
+            enemy.tell = if winding_up { 1.0 } else { 0.0 };
+            g.enemies.push(enemy);
+            g.update_enemies(STEP);
+            let movement = g.enemies[0].pos - start;
+            let forward = (g.player.pos - start).normalize_or_zero();
+            let expected = 110.0 * 1.1 * 0.4 * STEP * if winding_up { 0.25 } else { 1.0 };
+            assert!(movement.dot(forward).abs() < 0.0001);
+            assert!((movement.length() - expected).abs() < 0.0001);
+        }
+    }
+
+    #[test]
+    fn boss_warnings_cover_countdown_and_arrival() {
+        for wave in [7, 15, 20] {
+            let mut g = game();
+            g.wave = wave - 1;
+            assert_eq!(
+                g.boss_warning(),
+                waves::boss_for_wave(wave).map(|boss| (wave, boss))
+            );
+            g.intermission = 0.0;
+            g.update_waves(STEP);
+            assert_eq!(g.boss_warning().unwrap().0, wave);
+            assert!(g.spawns.iter().any(|s| s.kind.is_boss() && s.timer > 2.0));
+            assert!(g
+                .sounds
+                .iter()
+                .any(|event| matches!(event, SoundEvent::Boss)));
+            g.wave_announcement = 0.0;
+            assert!(g.boss_warning().is_none());
+        }
+        let mut ordinary = game();
+        ordinary.wave = 8;
+        assert!(ordinary.boss_warning().is_none());
+    }
+
+    #[test]
+    fn final_boss_and_pending_spawns_block_victory() {
+        let mut g = game();
+        g.wave = waves::CAMPAIGN_WAVES;
+        g.spawns.push(Spawn {
+            pos: vec2(350.0, 120.0),
+            timer: 0.1,
+            kind: Kind::Overlord,
+        });
+        g.update_waves(0.2);
+        assert!(!g.victory);
+        assert!(g.enemies.iter().any(|e| e.kind == Kind::Overlord));
+        g.update_waves(STEP);
+        assert!(!g.victory);
+        g.enemies[0].health = 0.0;
+        g.update(Input::default(), STEP);
+        g.update(Input::default(), STEP);
+        assert!(g.victory);
+    }
+
+    #[test]
+    fn buffed_weapons_hit_their_new_damage_breakpoints() {
+        for (weapon, kind, wave) in [(2, Kind::Brute, 6), (1, Kind::Bomber, 3)] {
+            let mut g = game();
+            g.player.pos = vec2(100.0, 120.0);
+            g.player.aim = Vec2::X;
+            g.player.weapon = weapon;
+            let mut target = monster(vec2(140.0, 120.0), kind);
+            target.health = kind.base_health() * waves::health_scale(wave);
+            target.max_health = target.health;
+            g.enemies.push(target);
+            g.shoot();
+            g.update_bullets(0.08);
+            assert!(
+                g.enemies[0].health <= 0.0,
+                "weapon {weapon} failed its damage breakpoint"
+            );
+        }
+    }
+
+    #[test]
+    fn railgun_starts_full_and_refills_its_larger_magazine() {
+        let mut g = game();
+        assert_eq!(g.player.ammo[2], 8);
+        g.player.weapon = 2;
+        g.player.ammo[2] = 0;
+        g.update(
+            Input {
+                fire: true,
+                ..Default::default()
+            },
+            STEP,
+        );
+        for _ in 0..130 {
+            g.update(Input::default(), STEP);
+        }
+        assert_eq!(g.player.ammo[2], 8);
+        assert!(g.player.reload <= 0.0);
     }
 
     fn monster(pos: Vec2, kind: Kind) -> Enemy {
@@ -1182,5 +1948,76 @@ mod tests {
                 _ => assert!(g.bullets.len() >= 3),
             }
         }
+    }
+
+    #[test]
+    fn new_monsters_and_bosses_use_their_distinct_attacks() {
+        for kind in [
+            Kind::Lancer,
+            Kind::Sentinel,
+            Kind::ThornTyrant,
+            Kind::BroodMatriarch,
+            Kind::Overlord,
+        ] {
+            let mut g = game();
+            g.enemies.push(monster(vec2(350.0, 120.0), kind));
+            g.update_enemies(STEP);
+            assert!(g.enemies[0].tell > 0.0);
+            assert!(
+                g.bullets.is_empty() && g.grenades.is_empty(),
+                "attack must be telegraphed"
+            );
+            for _ in 0..150 {
+                g.update_enemies(STEP);
+            }
+            match kind {
+                Kind::Lancer => {
+                    assert_eq!(g.bullets.len(), 1);
+                    assert!(g.bullets[0].velocity.length() > 800.0);
+                }
+                Kind::Sentinel => assert_eq!(g.bullets.len(), 5),
+                Kind::ThornTyrant => {
+                    assert_eq!(g.bullets.len(), 12);
+                    assert!(g.bullets.iter().any(|b| b.velocity.x > 0.0));
+                    assert!(g.bullets.iter().any(|b| b.velocity.x < 0.0));
+                }
+                Kind::BroodMatriarch => {
+                    assert_eq!(g.grenades.len(), 3);
+                    assert!(g.grenades[0].target.distance(g.grenades[1].target) > 50.0);
+                }
+                Kind::Overlord => {
+                    assert_eq!(g.bullets.len(), 3);
+                    assert!(g.bullets.iter().all(|b| b.blast_radius > 0.0));
+                    assert_eq!(g.grenades.len(), 1);
+                }
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    #[test]
+    fn stalker_weaves_toward_player_faster_than_a_ravager() {
+        let mut runner = game();
+        let mut stalker = game();
+        runner
+            .enemies
+            .push(monster(vec2(350.0, 120.0), Kind::Runner));
+        stalker
+            .enemies
+            .push(monster(vec2(350.0, 120.0), Kind::Stalker));
+        for i in 0..60 {
+            runner.time = i as f32 * STEP;
+            stalker.time = runner.time;
+            runner.update_enemies(STEP);
+            stalker.update_enemies(STEP);
+        }
+        assert!(
+            stalker.enemies[0].pos.distance(stalker.player.pos)
+                < runner.enemies[0].pos.distance(runner.player.pos)
+        );
+        assert!(stalker.bullets.is_empty());
+        assert!(stalker
+            .level
+            .circle_free(stalker.enemies[0].pos, Kind::Stalker.radius()));
     }
 }

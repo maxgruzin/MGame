@@ -2,10 +2,27 @@
 name = "mgame"
 version = "0.3.0"
 edition = "2021"
+default-run = "mgame"
 description = "A fast, top-down survival shooter rebuilt in Rust"
 
+[features]
+default = ["desktop"]
+desktop = ["macroquad/audio", "dep:audrey"]
+
 [dependencies]
-macroquad = { version = "=0.4.16", features = ["audio"] }
+macroquad = { version = "=0.4.16", features = ["glam-serde"] }
+audrey = { version = "=0.3.0", optional = true, default-features = false, features = ["ogg_vorbis", "wav"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[[bin]]
+name = "mgame"
+path = "src/main.rs"
+required-features = ["desktop"]
+
+[[bin]]
+name = "party-server"
+path = "src/bin/party-server.rs"
 
 [profile.release]
 lto = "thin"

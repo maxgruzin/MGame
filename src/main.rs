@@ -1,6 +1,9 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 mod assets;
+mod editor_ui;
 mod menu;
+mod online_ui;
+mod party_smoke;
 mod render;
 mod settings;
 mod sound;
@@ -9,6 +12,7 @@ use macroquad::prelude::*;
 use mgame::{
     level::Level,
     simulation::{Game, Input, STEP},
+    waves::CAMPAIGN_WAVES,
 };
 use render::{text, BG, MINT, MUTED, PANEL};
 use settings::{Settings, RESOLUTIONS};
@@ -146,10 +150,25 @@ fn apply_settings(settings: &Settings) {
         request_new_screen_size(w as f32, h as f32);
     }
 }
+fn volume_control(label: &str, value: &mut u8, x: f32, y: f32, scale: f32) {
+    text(
+        &format!("{label}    {value}%"),
+        x + 18.0,
+        y + 32.0,
+        20.0,
+        WHITE,
+    );
+    if button(Rect::new(x + 340.0, y, 54.0, 48.0), "-", scale, false) {
+        *value = value.saturating_sub(5);
+    }
+    if button(Rect::new(x + 406.0, y, 54.0, 48.0), "+", scale, false) {
+        *value = value.saturating_add(5).min(100);
+    }
+}
 fn settings_panel(s: &mut Settings, scale: f32, w: f32, h: f32) -> bool {
     let x = w * 0.5 - 230.0;
-    let y = h * 0.5 - 200.0;
-    draw_rectangle(x - 32.0, y - 56.0, 524.0, 474.0, PANEL);
+    let y = h * 0.5 - 240.0;
+    draw_rectangle(x - 32.0, y - 56.0, 524.0, 592.0, PANEL);
     text("DISPLAY & AUDIO", x, y - 12.0, 31.0, MINT);
     let (rw, rh) = RESOLUTIONS[s.resolution];
     if button(
@@ -186,21 +205,23 @@ fn settings_panel(s: &mut Settings, scale: f32, w: f32, h: f32) -> bool {
     }
     if button(
         Rect::new(x, y + 210.0, 460.0, 52.0),
-        &format!("SOUND    {}", if s.sound { "ON" } else { "OFF" }),
+        &format!("ALL AUDIO    {}", if s.sound { "ON" } else { "OFF" }),
         scale,
         s.sound,
     ) {
         s.sound = !s.sound;
     }
+    volume_control("SOUND EFFECTS", &mut s.sound_volume, x, y + 274.0, scale);
+    volume_control("MUSIC", &mut s.music_volume, x, y + 332.0, scale);
     text(
         "Window can also be resized freely.",
         x,
-        y + 297.0,
+        y + 413.0,
         18.0,
         MUTED,
     );
     button(
-        Rect::new(x, y + 320.0, 460.0, 50.0),
+        Rect::new(x, y + 436.0, 460.0, 50.0),
         "SAVE & BACK",
         scale,
         true,
@@ -209,22 +230,26 @@ fn settings_panel(s: &mut Settings, scale: f32, w: f32, h: f32) -> bool {
 
 #[macroquad::main(window_conf)]
 async fn main() {
+    prevent_quit();
     if let Ok(mut font) =
         load_ttf_font_from_bytes(include_bytes!("../assets/fonts/Barlow-Medium.ttf"))
     {
         font.set_filter(FilterMode::Linear);
         macroquad::text::set_default_font(font);
     }
+    render::prepare_font();
     let args: Vec<String> = std::env::args().collect();
     let smoke = args.iter().any(|s| s == "--smoke-test");
+    let editor_smoke = args.iter().any(|s| s == "--editor-smoke-test");
+    let party_smoke = args.iter().any(|s| s == "--party-smoke-test");
     let mut settings = Settings::load();
-    if smoke {
+    if smoke || editor_smoke || party_smoke {
         settings.fullscreen = false;
         settings.sound = false;
         set_fullscreen(false);
         request_new_screen_size(1280.0, 720.0);
     }
-    let audio = sound::Audio::new().await;
+    let mut audio = sound::Audio::new().await;
     let assets = assets::Assets::new();
     let mut entries = catalog();
     let mut selected = 0usize;
@@ -246,6 +271,36 @@ async fn main() {
         }
     }
     let mut preview = entries[selected].load();
+    let mut editor = if args.iter().any(|s| s == "--editor") || editor_smoke {
+        if args.iter().any(|s| s == "--map") {
+            match editor_ui::Editor::from_entry(&entries[selected]) {
+                Ok(e) => Some(e),
+                Err(e) => {
+                    message = e;
+                    Some(editor_ui::Editor::blank())
+                }
+            }
+        } else {
+            Some(editor_ui::Editor::blank())
+        }
+    } else {
+        None
+    };
+    if let Some(e) = &mut editor {
+        if !message.is_empty() {
+            e.notice(std::mem::take(&mut message));
+        }
+    }
+    let mut testing_editor = false;
+    let mut online: Option<online_ui::OnlineUi> = None;
+    let mut party_smoke = if party_smoke {
+        let (smoke, ui) = party_smoke::Smoke::new();
+        online = Some(ui);
+        Some(smoke)
+    } else {
+        None
+    };
+    let mut editor_frames = 0;
     let mut game: Option<Game> = if smoke { Some(smoke_game()) } else { None };
     let mut paused = false;
     let mut show_settings = false;
@@ -277,6 +332,74 @@ async fn main() {
             }
         }
         clear_background(BG);
+        if editor.is_some() && !testing_editor {
+            audio.update_music(false, settings.music_volume);
+            let e = editor.as_mut().unwrap();
+            if editor_smoke {
+                e.smoke_step(editor_frames);
+            }
+            match e.frame(scale) {
+                editor_ui::Action::None => {}
+                editor_ui::Action::Quit => break,
+                editor_ui::Action::Exit => {
+                    editor = None;
+                    entries = catalog();
+                    selected = selected.min(entries.len() - 1);
+                    page = selected / menu::PAGE_SIZE;
+                    preview = entries[selected].load();
+                }
+                editor_ui::Action::Play(level) => {
+                    camera_center = level.spawn;
+                    game = Some(Game::new(level, false));
+                    testing_editor = true;
+                    paused = false;
+                    accumulator = 0.0;
+                }
+            }
+            if editor_smoke {
+                if editor_frames == 5 {
+                    get_screen_data().export_png("target/smoke-editor.png");
+                }
+                if editor_frames == 15 {
+                    get_screen_data().export_png("target/smoke-editor-large.png");
+                }
+                if editor_frames == 25 {
+                    get_screen_data().export_png("target/smoke-editor-dialog.png");
+                }
+                if editor_frames == 30 {
+                    break;
+                }
+                editor_frames += 1;
+            }
+            next_frame().await;
+            continue;
+        }
+        if is_quit_requested() {
+            if testing_editor {
+                game = None;
+                audio.update_music(false, settings.music_volume);
+                testing_editor = false;
+                if let Some(e) = &mut editor {
+                    if matches!(e.confirm_quit(), editor_ui::Action::Quit) {
+                        break;
+                    }
+                }
+                next_frame().await;
+                continue;
+            }
+            break;
+        }
+        if let Some(party) = &mut online {
+            let exit = party.frame(&assets, &mut audio, &mut settings, frame_time, scale);
+            if party_smoke.as_mut().is_some_and(|smoke| smoke.frame(party)) {
+                break;
+            }
+            if exit {
+                online = None;
+            }
+            next_frame().await;
+            continue;
+        }
         let mut return_to_menu = false;
         let mut restart = false;
         let mut next_level = false;
@@ -340,7 +463,11 @@ async fn main() {
                     };
                     if smoke {
                         input = Input {
-                            movement: Vec2::ZERO,
+                            movement: match frame {
+                                40..100 => Vec2::X,
+                                100..140 => -Vec2::X,
+                                _ => Vec2::ZERO,
+                            },
                             aim: g
                                 .enemies
                                 .iter()
@@ -368,7 +495,7 @@ async fn main() {
                 pending_reload = false;
                 pending_weapon = None;
             }
-            audio.play(&g.sounds, settings.sound);
+            audio.play(&g.sounds, settings.sound, settings.sound_volume);
             g.sounds.clear();
             render::world(
                 g,
@@ -444,7 +571,11 @@ async fn main() {
                     }
                     if button(
                         Rect::new(x, y + 195.0, 400.0, 52.0),
-                        "ARENA SELECT",
+                        if testing_editor {
+                            "BACK TO EDITOR"
+                        } else {
+                            "ARENA SELECT"
+                        },
                         scale,
                         false,
                     ) {
@@ -454,6 +585,19 @@ async fn main() {
                 set_default_camera();
             } else {
                 render::crosshair();
+            }
+            if testing_editor {
+                let (w, _) = ui_begin(scale);
+                if button(
+                    Rect::new(w * 0.5 - 140.0, 112.0, 280.0, 36.0),
+                    "BACK TO EDITOR / F6",
+                    scale,
+                    true,
+                ) || is_key_pressed(KeyCode::F6)
+                {
+                    return_to_menu = true;
+                }
+                set_default_camera();
             }
         } else {
             show_mouse(true);
@@ -484,6 +628,14 @@ async fn main() {
                 MINT,
             );
             if !show_settings {
+                if button(
+                    Rect::new(w - 440.0, 55.0, 250.0, 36.0),
+                    "ONLINE PARTY",
+                    scale,
+                    false,
+                ) {
+                    online = Some(online_ui::OnlineUi::new());
+                }
                 let old = selected;
                 if is_key_pressed(KeyCode::Down) {
                     selected = (selected + 1) % entries.len();
@@ -563,16 +715,12 @@ async fn main() {
             text("1 / 2 / 3 / 4 / 5", x + 362.0, 471.0, 23.0, WHITE);
             text("Switch weapons", x + 362.0, 497.0, 18.0, MUTED);
             if !show_settings {
-                if button(
-                    Rect::new(x, 521.0, 560.0, 42.0),
-                    if endless {
-                        "MODE / ENDLESS SURVIVAL"
-                    } else {
-                        "MODE / CLEAR SIX WAVES"
-                    },
-                    scale,
-                    false,
-                ) {
+                let mode_label = if endless {
+                    "MODE / ENDLESS SURVIVAL".to_string()
+                } else {
+                    format!("MODE / CLEAR {CAMPAIGN_WAVES} WAVES")
+                };
+                if button(Rect::new(x, 521.0, 560.0, 42.0), &mode_label, scale, false) {
                     endless = !endless;
                 }
                 if button(
@@ -601,6 +749,20 @@ async fn main() {
                 }
                 if button(
                     Rect::new(298.0, h - 65.0, 216.0, 40.0),
+                    "MAP EDITOR",
+                    scale,
+                    false,
+                ) {
+                    match editor_ui::Editor::from_entry(&entries[selected]) {
+                        Ok(e) => {
+                            editor = Some(e);
+                            message.clear();
+                        }
+                        Err(e) => message = e,
+                    }
+                }
+                if button(
+                    Rect::new(w - 164.0, 55.0, 100.0, 36.0),
                     "QUIT",
                     scale,
                     false,
@@ -609,7 +771,7 @@ async fn main() {
                 }
             }
             text(
-                "F11 / FULLSCREEN      Add .mmp or .arena files to Maps, then restart",
+                "F11 / FULLSCREEN      MAP EDITOR / Create, paint, save and play",
                 x,
                 h - 29.0,
                 16.0,
@@ -621,8 +783,21 @@ async fn main() {
             game = None;
             paused = false;
             show_settings = false;
+            testing_editor = false;
         }
         if restart || next_level {
+            if testing_editor {
+                if let Some(e) = &editor {
+                    if let Ok(level) = e.doc.validate("Editor play test") {
+                        camera_center = level.spawn;
+                        game = Some(Game::new(level, false));
+                        paused = false;
+                        accumulator = 0.0;
+                    }
+                }
+                next_frame().await;
+                continue;
+            }
             if next_level {
                 selected = (selected + 1) % entries.len();
                 page = selected / 7;
@@ -659,11 +834,22 @@ async fn main() {
             set_default_camera();
         }
         if smoke {
+            if matches!(frame, 72 | 88 | 120 | 170) {
+                get_screen_data().export_png(&format!("target/smoke-player-{frame}.png"));
+            }
             if frame == 45 {
                 get_screen_data().export_png("target/smoke-monsters.png");
             }
             if frame == 180 {
                 get_screen_data().export_png("target/smoke-game.png");
+                let mut warning = Game::new(Level::builtin(0), false);
+                warning.wave = 6;
+                warning.intermission = 4.0;
+                camera_center = warning.player.pos;
+                game = Some(warning);
+            }
+            if frame == 190 {
+                get_screen_data().export_png("target/smoke-boss-warning.png");
             }
             if frame == 210 {
                 game = None;
@@ -716,6 +902,15 @@ async fn main() {
                 break;
             }
         }
+        audio.update_music(
+            settings.sound
+                && !paused
+                && !show_settings
+                && game
+                    .as_ref()
+                    .is_some_and(|g| g.player.health > 0.0 && !g.victory),
+            settings.music_volume,
+        );
         frame += 1;
         next_frame().await;
     }
@@ -727,8 +922,9 @@ fn smoke_game() -> Game {
     g.player.previous = g.player.pos;
     g.player.quad = 12.0;
     g.player.immortal = 8.0;
-    g.wave = 6;
-    g.remaining = 8;
+    g.player.haste = 10.0;
+    g.wave = 20;
+    g.remaining = 0;
     for (i, kind) in [
         Kind::Runner,
         Kind::Gunner,
@@ -736,12 +932,16 @@ fn smoke_game() -> Game {
         Kind::Hunter,
         Kind::Bomber,
         Kind::Siege,
+        Kind::Stalker,
+        Kind::Lancer,
+        Kind::Sentinel,
+        Kind::Overlord,
     ]
     .into_iter()
     .enumerate()
     {
         let desired =
-            g.player.pos + Vec2::from_angle(i as f32 * std::f32::consts::TAU / 6.0) * 240.0;
+            g.player.pos + Vec2::from_angle(i as f32 * std::f32::consts::TAU / 10.0) * 260.0;
         let pos = (0..g.level.tiles.len())
             .map(|n| g.level.center(n))
             .filter(|&p| g.level.circle_free(p, 19.0) && p.distance(g.player.pos) > 170.0)
@@ -754,8 +954,8 @@ fn smoke_game() -> Game {
             pos,
             previous: pos,
             kind,
-            health: 300.0,
-            max_health: 300.0,
+            health: kind.base_health() * mgame::waves::health_scale(g.wave),
+            max_health: kind.base_health() * mgame::waves::health_scale(g.wave),
             attack: 0.7,
             tell: 0.0,
             aim: Vec2::X,
