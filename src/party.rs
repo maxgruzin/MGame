@@ -3,7 +3,7 @@ use crate::{level::Level, simulation::*};
 use macroquad::prelude::Vec2;
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL: u32 = 1;
+pub const PROTOCOL: u32 = 2;
 pub const DEFAULT_PORT: u16 = 7777;
 pub const MAX_PLAYERS: usize = 8;
 pub const COLORS: [u32; MAX_PLAYERS] = [
@@ -14,7 +14,6 @@ pub const COLORS: [u32; MAX_PLAYERS] = [
 pub struct Member {
     pub id: u64,
     pub name: String,
-    pub weapon: Option<usize>,
     pub ready: bool,
     pub slot: u8,
 }
@@ -26,12 +25,13 @@ pub struct Lobby {
     pub arena: String,
     pub endless: bool,
     pub in_game: bool,
+    pub difficulty: Difficulty,
 }
 
 #[derive(Serialize, Deserialize)]
 pub enum ClientMessage {
     Join { protocol: u32, name: String },
-    Weapon(usize),
+    Difficulty(Difficulty),
     Ready(bool),
     Start,
     ReturnToLobby,
@@ -51,6 +51,7 @@ pub enum ServerMessage {
         name: String,
         endless: bool,
         members: Vec<Member>,
+        difficulty: Difficulty,
     },
     Snapshot(Box<Snapshot>),
     Error(String),
@@ -176,6 +177,7 @@ impl Room {
                 arena: level.name.clone(),
                 endless,
                 in_game: false,
+                difficulty: Difficulty::default(),
             },
             game: None,
             level,
@@ -209,7 +211,6 @@ impl Room {
         self.lobby.members.push(Member {
             id,
             name,
-            weapon: None,
             ready: false,
             slot,
         });
@@ -230,6 +231,7 @@ impl Room {
         if self.lobby.members.is_empty() {
             self.game = None;
             self.lobby.in_game = false;
+            self.lobby.difficulty = Difficulty::default();
         }
     }
 
@@ -241,46 +243,46 @@ impl Room {
             .find(|m| m.id == id)
             .ok_or("Join first")?;
         match command {
-            ClientMessage::Weapon(w) if self.game.is_none() => {
-                if *w >= WEAPONS.len() {
-                    return Err("Unknown weapon".into());
+            ClientMessage::Difficulty(difficulty) if self.game.is_none() => {
+                if id != self.lobby.host {
+                    return Err("Only the host can change difficulty".into());
                 }
-                member.weapon = Some(*w);
-                member.ready = false;
+                if !difficulty.valid() {
+                    return Err("Difficulty must use 5% steps within the allowed ranges".into());
+                }
+                if self.lobby.difficulty != *difficulty {
+                    self.lobby.difficulty = *difficulty;
+                    for member in &mut self.lobby.members {
+                        member.ready = false;
+                    }
+                }
             }
             ClientMessage::Ready(ready) if self.game.is_none() => {
-                if member.weapon.is_none() {
-                    return Err("Select one weapon before readying up".into());
-                }
                 member.ready = *ready;
             }
             ClientMessage::Start if self.game.is_none() => {
                 if id != self.lobby.host {
                     return Err("Only the host can start the match".into());
                 }
-                if !self
-                    .lobby
-                    .members
-                    .iter()
-                    .all(|m| m.ready && m.weapon.is_some())
-                {
-                    return Err("Every player must choose a weapon and be ready".into());
+                if !self.lobby.members.iter().all(|m| m.ready) {
+                    return Err("Every player must be ready".into());
                 }
-                let weapons: Vec<_> = self
-                    .lobby
-                    .members
-                    .iter()
-                    .map(|m| m.weapon.unwrap())
-                    .collect();
-                let mut game = Game::new_party(self.level.clone(), self.lobby.endless, &weapons)?;
+                let mut game = Game::new_party(
+                    self.level.clone(),
+                    self.lobby.endless,
+                    self.lobby.members.len(),
+                )?;
+                game.difficulty = self.lobby.difficulty;
                 // Stable colors survive lobby departures; inputs use member order.
                 game.player.slot = self.lobby.members[0].slot;
+                game.player.name = self.lobby.members[0].name.clone();
                 for (player, member) in game
                     .allies
                     .iter_mut()
                     .zip(self.lobby.members.iter().skip(1))
                 {
                     player.slot = member.slot;
+                    player.name = member.name.clone();
                 }
                 self.game = Some(game);
                 self.lobby.in_game = true;
@@ -328,6 +330,8 @@ pub fn sanitize_input(mut input: Input) -> Result<Input, String> {
         return Err("Invalid input coordinates".into());
     }
     input.movement = input.movement.clamp_length_max(1.0);
-    input.weapon = None;
+    if input.weapon.is_some_and(|w| w >= WEAPONS.len()) {
+        return Err("Unknown weapon".into());
+    }
     Ok(input)
 }

@@ -100,6 +100,7 @@ impl PartyServer {
                         // Keep one-shot presses until a simulation tick consumes them.
                         input.dash |= self.peers[index].input.dash;
                         input.reload |= self.peers[index].input.reload;
+                        input.weapon = input.weapon.or(self.peers[index].input.weapon);
                         self.peers[index].input = input;
                         self.peers[index].last_input = now;
                         return;
@@ -118,6 +119,7 @@ impl PartyServer {
                         name: self.room.level.name.clone(),
                         endless: self.room.lobby.endless,
                         members: self.room.lobby.members.clone(),
+                        difficulty: self.room.lobby.difficulty,
                     };
                     for peer in &mut self.peers {
                         peer.input = Input::default();
@@ -225,6 +227,7 @@ impl PartyServer {
                 for peer in &mut self.peers {
                     peer.input.dash = false;
                     peer.input.reload = false;
+                    peer.input.weapon = None;
                 }
                 if self.tick.is_multiple_of(6) {
                     let snapshot =

@@ -52,13 +52,14 @@ pub fn roster(wave: u32) -> Vec<Kind> {
     enemies
 }
 
-/// Extra players add one full roster each; scheduled bosses remain unique.
-pub fn party_roster(wave: u32, players: usize) -> Vec<Kind> {
+/// Extra players add a configurable fraction of the roster; bosses remain unique.
+pub fn party_roster(wave: u32, players: usize, additional_percent: u16) -> Vec<Kind> {
     let mut enemies = roster(wave);
     let base = enemies.len();
     let regular: Vec<_> = enemies.iter().copied().filter(|k| !k.is_boss()).collect();
     if !regular.is_empty() {
-        for i in base..base * players.clamp(1, 8) {
+        let percent = 100 + players.clamp(1, 8).saturating_sub(1) * additional_percent as usize;
+        for i in base..(base * percent).div_ceil(100) {
             enemies.push(regular[(i - base) % regular.len()]);
         }
     }

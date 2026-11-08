@@ -33,11 +33,14 @@ pub struct OnlineUi {
     send_timer: f32,
     dash: bool,
     reload: bool,
+    weapon: Option<usize>,
     spectate: usize,
 }
 
 impl OnlineUi {
     pub fn new() -> Self {
+        // Macroquad retains typed characters until consumed, including gameplay keys.
+        while get_char_pressed().is_some() {}
         Self {
             fields: [
                 "127.0.0.1".into(),
@@ -57,6 +60,7 @@ impl OnlineUi {
             send_timer: 0.0,
             dash: false,
             reload: false,
+            weapon: None,
             spectate: 0,
         }
     }
@@ -144,6 +148,10 @@ impl OnlineUi {
         dt: f32,
         scale: f32,
     ) -> bool {
+        // Drain before polling: a disconnect may show the form in this same frame.
+        if self.client.is_some() || self.connecting.is_some() {
+            while get_char_pressed().is_some() {}
+        }
         self.network();
         let playing = self.client.as_ref().is_some_and(|c| c.game.is_some());
         if playing && !self.was_playing {
@@ -169,7 +177,7 @@ impl OnlineUi {
             let x = w * 0.5 - 530.0;
             text("ONLINE PARTY", x, 84.0, 48.0, WHITE);
             text(
-                "One squad. One weapon each. Survive together.",
+                "One squad. Every weapon. Survive together.",
                 x,
                 120.0,
                 21.0,
@@ -189,7 +197,7 @@ impl OnlineUi {
             {
                 return true;
             }
-            self.notice_line(x, h - 90.0);
+            self.notice_line(x + 255.0, h - 48.0);
             set_default_camera();
         }
         false
@@ -331,7 +339,6 @@ impl OnlineUi {
         let lobby = client.lobby.as_ref().unwrap().clone();
         let id = client.id;
         let local = lobby.members.iter().find(|m| m.id == id);
-        let weapon = local.and_then(|m| m.weapon);
         let ready = local.is_some_and(|m| m.ready);
         text(
             &format!("WAITING ROOM  /  {} OF 8", lobby.members.len()),
@@ -373,13 +380,7 @@ impl OnlineUi {
                 16.0,
                 color,
             );
-            text(
-                member.weapon.map_or("Choose weapon", |w| WEAPONS[w].name),
-                x + 232.0,
-                y,
-                15.0,
-                WHITE,
-            );
+            text("ALL WEAPONS", x + 232.0, y, 15.0, WHITE);
             text(
                 if member.ready { "READY" } else { "WAITING" },
                 x + 475.0,
@@ -389,25 +390,41 @@ impl OnlineUi {
             );
         }
         let right = x + 605.0;
+        text("DIFFICULTY", right, 175.0, 23.0, MINT);
         text(
-            "YOUR WEAPON / LOCKED FOR THE MATCH",
+            "Enemy bonus per additional player",
             right,
-            175.0,
-            19.0,
-            MINT,
+            202.0,
+            17.0,
+            MUTED,
         );
-        for (i, weapon_info) in WEAPONS.iter().enumerate() {
-            if button(
-                Rect::new(right, 194.0 + i as f32 * 48.0, 455.0, 40.0),
-                weapon_info.name,
+        let mut difficulty = lobby.difficulty;
+        let host = id == lobby.host;
+        for (label, value, y) in [
+            ("Enemy count", &mut difficulty.enemy_count, 216.0),
+            ("Enemy damage", &mut difficulty.enemy_damage, 252.0),
+            ("Enemy health", &mut difficulty.enemy_health, 288.0),
+        ] {
+            *value = percent_control(label, *value as i16, 0, 300, right, y, scale, host) as u16;
+        }
+        text("Player weapon damage", right, 345.0, 17.0, MUTED);
+        for (i, weapon) in WEAPONS.iter().enumerate() {
+            difficulty.weapon_damage[i] = percent_control(
+                weapon.name,
+                difficulty.weapon_damage[i],
+                -50,
+                100,
+                right,
+                358.0 + i as f32 * 36.0,
                 scale,
-                weapon == Some(i),
-            ) {
-                self.send(ClientMessage::Weapon(i));
-            }
+                host,
+            );
+        }
+        if difficulty != lobby.difficulty {
+            self.send(ClientMessage::Difficulty(difficulty));
         }
         if button(
-            Rect::new(right, 450.0, 455.0, 45.0),
+            Rect::new(x, 607.0, 562.0, 42.0),
             if ready {
                 "READY / CLICK TO UNREADY"
             } else {
@@ -418,11 +435,10 @@ impl OnlineUi {
         ) {
             self.send(ClientMessage::Ready(!ready));
         }
-        let all_ready = !lobby.members.is_empty()
-            && lobby.members.iter().all(|m| m.ready && m.weapon.is_some());
+        let all_ready = !lobby.members.is_empty() && lobby.members.iter().all(|m| m.ready);
         if id == lobby.host {
             if button(
-                Rect::new(right, 507.0, 455.0, 50.0),
+                Rect::new(right, 607.0, 455.0, 42.0),
                 if all_ready {
                     "START MATCH"
                 } else {
@@ -437,27 +453,26 @@ impl OnlineUi {
             text(
                 "The host (*) starts when everyone is ready.",
                 right,
-                537.0,
+                635.0,
                 18.0,
                 MUTED,
             );
         }
-        let count = lobby.members.len().max(1);
         text(
-            &format!(
-                "{}x enemies / +{}% health & damage",
-                count,
-                (count - 1) * 25
-            ),
+            if host {
+                "Changes clear everyone's ready status."
+            } else {
+                "Only the host can change difficulty."
+            },
             right,
-            586.0,
-            18.0,
+            563.0,
+            17.0,
             MUTED,
         );
         text(
-            "Changing your weapon clears your ready status.",
+            "1-5 / mouse wheel: switch weapons in game",
             right,
-            612.0,
+            587.0,
             17.0,
             MUTED,
         );
@@ -500,6 +515,29 @@ impl OnlineUi {
         if !active {
             self.dash = false;
             self.reload = false;
+            self.weapon = None;
+        } else {
+            for (i, key) in [
+                KeyCode::Key1,
+                KeyCode::Key2,
+                KeyCode::Key3,
+                KeyCode::Key4,
+                KeyCode::Key5,
+            ]
+            .iter()
+            .enumerate()
+            {
+                if is_key_pressed(*key) {
+                    self.weapon = Some(i);
+                }
+            }
+            let wheel = mouse_wheel().1;
+            if wheel != 0.0 {
+                self.weapon = Some(
+                    (self.weapon.unwrap_or(game.player.weapon) + if wheel > 0.0 { 1 } else { 4 })
+                        % WEAPONS.len(),
+                );
+            }
         }
         let input = if active {
             Input {
@@ -511,7 +549,7 @@ impl OnlineUi {
                 fire: is_mouse_button_down(MouseButton::Left),
                 dash: self.dash,
                 reload: self.reload,
-                weapon: None,
+                weapon: self.weapon,
             }
         } else {
             Input::default()
@@ -571,7 +609,7 @@ impl OnlineUi {
                 MINT,
             );
             text(
-                "Your team can revive you by holding an enemy-dropped beacon.",
+                "Hold a death beacon together to revive a fallen teammate.",
                 w * 0.5 - 245.0,
                 h - 130.0,
                 16.0,
@@ -650,6 +688,7 @@ impl OnlineUi {
             self.send(ClientMessage::Input(input));
             self.dash = false;
             self.reload = false;
+            self.weapon = None;
         }
         if return_lobby {
             self.send(ClientMessage::ReturnToLobby);
@@ -682,5 +721,34 @@ impl OnlineUi {
         for (i, line) in crate::wrap(notice, 110).iter().take(2).enumerate() {
             text(line, x, y + i as f32 * 20.0, 17.0, ORANGE);
         }
+    }
+}
+
+// Keep the same compact - / value / + interaction as the audio settings.
+#[allow(clippy::too_many_arguments)]
+fn percent_control(
+    label: &str,
+    value: i16,
+    min: i16,
+    max: i16,
+    x: f32,
+    y: f32,
+    scale: f32,
+    enabled: bool,
+) -> i16 {
+    text(
+        label,
+        x,
+        y + 22.0,
+        16.0,
+        if enabled { WHITE } else { MUTED },
+    );
+    let minus = button(Rect::new(x + 292.0, y, 30.0, 30.0), "-", scale, false);
+    text(&format!("{value:+}%"), x + 330.0, y + 22.0, 19.0, MINT);
+    let plus = button(Rect::new(x + 425.0, y, 30.0, 30.0), "+", scale, false);
+    if enabled {
+        (value + 5 * (i16::from(plus) - i16::from(minus))).clamp(min, max)
+    } else {
+        value
     }
 }

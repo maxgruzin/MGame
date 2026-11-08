@@ -78,9 +78,47 @@ pub const WEAPONS: [Weapon; 5] = [
         speed: 0.0,
     },
 ];
+
+/// Whole percentages; the server accepts only the same 5% steps as the lobby UI.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Difficulty {
+    pub enemy_count: u16,
+    pub enemy_damage: u16,
+    pub enemy_health: u16,
+    pub weapon_damage: [i16; 5],
+}
+
+impl Default for Difficulty {
+    fn default() -> Self {
+        Self {
+            enemy_count: 75,
+            enemy_damage: 15,
+            enemy_health: 15,
+            weapon_damage: [0; 5],
+        }
+    }
+}
+
+impl Difficulty {
+    pub fn valid(&self) -> bool {
+        [self.enemy_count, self.enemy_damage, self.enemy_health]
+            .iter()
+            .all(|&p| p <= 300 && p % 5 == 0)
+            && self
+                .weapon_damage
+                .iter()
+                .all(|&p| (-50..=100).contains(&p) && p % 5 == 0)
+    }
+
+    pub fn scale(players: usize, percent: u16) -> f32 {
+        1.0 + players.saturating_sub(1) as f32 * percent as f32 / 100.0
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Player {
     pub slot: u8,
+    pub name: String,
     pub connected: bool,
     pub pos: Vec2,
     pub previous: Vec2,
@@ -284,6 +322,7 @@ pub struct Game {
     pub allies: Vec<Player>,
     /// Zero for solo; fixed starting headcount for online difficulty.
     pub party_size: usize,
+    pub difficulty: Difficulty,
     pub beacons: Vec<ReviveBeacon>,
     pub enemies: Vec<Enemy>,
     pub bullets: Vec<Bullet>,
@@ -330,6 +369,7 @@ impl Game {
             level,
             player: Player {
                 slot: 0,
+                name: String::new(),
                 connected: true,
                 pos,
                 previous: pos,
@@ -351,6 +391,7 @@ impl Game {
             },
             allies: vec![],
             party_size: 0,
+            difficulty: Difficulty::default(),
             beacons: vec![],
             enemies: vec![],
             bullets: vec![],
@@ -384,8 +425,8 @@ impl Game {
         std::iter::once(&self.player).chain(self.allies.iter())
     }
 
-    pub fn party_stat_scale(&self) -> f32 {
-        1.0 + self.party_size.saturating_sub(1) as f32 * 0.25
+    pub fn party_count_scale(&self) -> f32 {
+        Difficulty::scale(self.party_size, self.difficulty.enemy_count)
     }
 
     pub fn team_alive(&self) -> bool {
@@ -408,20 +449,18 @@ impl Game {
             .fold(f32::INFINITY, f32::min)
     }
 
-    pub fn new_party(level: Level, endless: bool, weapons: &[usize]) -> Result<Self, String> {
-        if weapons.is_empty() || weapons.len() > 8 || weapons.iter().any(|&w| w >= WEAPONS.len()) {
-            return Err("A party requires 1-8 players with valid weapons".into());
+    pub fn new_party(level: Level, endless: bool, count: usize) -> Result<Self, String> {
+        if !(1..=8).contains(&count) {
+            return Err("A party requires 1-8 players".into());
         }
         let mut game = Self::new(level, endless);
-        game.party_size = weapons.len();
-        game.player.weapon = weapons[0];
-        for (index, &weapon) in weapons.iter().enumerate().skip(1) {
+        game.party_size = count;
+        for index in 1..count {
             let Some(pos) = game.free_party_spawn(game.level.spawn) else {
                 return Err("The arena has no safe room for this party".into());
             };
             let mut player = game.player.clone();
             player.slot = index as u8;
-            player.weapon = weapon;
             player.pos = pos;
             player.previous = pos;
             game.ally_fields.push(game.level.flow_field(pos));
@@ -494,36 +533,50 @@ impl Game {
         }
         let mut beacons = std::mem::take(&mut self.beacons);
         for beacon in &mut beacons {
-            let fallen = self.players().position(|p| p.connected && p.health <= 0.0);
-            let held = self.players().any(|p| {
-                p.connected
-                    && p.health > 0.0
-                    && p.pos.distance(beacon.pos) <= REVIVE_RADIUS
-                    && self.level.clear_shot(p.pos, beacon.pos)
-            });
+            let fallen: Vec<_> = self
+                .players()
+                .enumerate()
+                .filter(|(_, p)| p.connected && p.health <= 0.0)
+                .map(|(index, _)| index)
+                .collect();
+            if fallen.is_empty() {
+                beacon.progress = -1.0;
+                continue;
+            }
+            let helpers = self
+                .players()
+                .filter(|p| {
+                    p.connected
+                        && p.health > 0.0
+                        && p.pos.distance(beacon.pos) <= REVIVE_RADIUS
+                        && self.level.clear_shot(p.pos, beacon.pos)
+                })
+                .count();
             let contested = self.enemies.iter().any(|e| {
                 e.health > 0.0 && e.pos.distance(beacon.pos) < REVIVE_RADIUS + e.kind.radius()
             });
-            if fallen.is_some() && held && !contested {
-                beacon.progress += dt;
+            if helpers > 0 && !contested {
+                beacon.progress = (beacon.progress + dt * helpers as f32).min(REVIVE_SECONDS);
             } else {
-                beacon.progress = 0.0;
+                beacon.progress = (beacon.progress - dt * 2.0).max(0.0);
             }
             if beacon.progress + 0.0001 >= REVIVE_SECONDS {
-                if let (Some(index), Some(pos)) = (fallen, self.free_party_spawn(beacon.pos)) {
+                if let Some(pos) = self.free_party_spawn(beacon.pos) {
+                    let index =
+                        fallen[(self.random() * fallen.len() as f32) as usize % fallen.len()];
                     let player = if index == 0 {
                         &mut self.player
                     } else {
                         &mut self.allies[index - 1]
                     };
-                    player.health = 60.0;
+                    player.health = 100.0;
                     player.pos = pos;
                     player.previous = pos;
                     player.velocity = Vec2::ZERO;
                     player.invulnerable = 3.0;
                     player.dash_time = 0.0;
                     player.reload = 0.0;
-                    player.ammo[player.weapon] = WEAPONS[player.weapon].magazine;
+                    player.ammo = WEAPONS.map(|w| w.magazine);
                     self.sounds.push(SoundEvent::Pickup);
                     self.field_timer = 0.0;
                     beacon.progress = -1.0;
@@ -588,10 +641,7 @@ impl Game {
         self.player.quad = (self.player.quad - dt).max(0.0);
         self.player.immortal = (self.player.immortal - dt).max(0.0);
         self.player.haste = (self.player.haste - dt).max(0.0);
-        if let Some(w) = input
-            .weapon
-            .filter(|&w| w < WEAPONS.len() && self.party_size == 0)
-        {
+        if let Some(w) = input.weapon.filter(|&w| w < WEAPONS.len()) {
             if w != self.player.weapon {
                 self.player.weapon = w;
                 self.player.reload = 0.0;
@@ -702,12 +752,6 @@ impl Game {
                 75
             }) * (1 + self.combo.min(20) / 5);
             self.burst(pos, kind.color(), 22, 180.0);
-            if self.party_size > 0
-                && self.beacons.is_empty()
-                && self.players().any(|p| p.connected && p.health <= 0.0)
-            {
-                self.beacons.push(ReviveBeacon { pos, progress: 0.0 });
-            }
             let roll = self.random();
             if roll < 0.24 {
                 let kind = if roll < 0.12 {
@@ -781,7 +825,12 @@ impl Game {
             3 | 4 => SoundEvent::Shotgun,
             _ => SoundEvent::Rifle,
         });
-        let damage = w.damage * if self.player.quad > 0.0 { 4.0 } else { 1.0 };
+        let weapon_scale = if self.party_size > 0 {
+            1.0 + self.difficulty.weapon_damage[self.player.weapon] as f32 / 100.0
+        } else {
+            1.0
+        };
+        let damage = w.damage * weapon_scale * if self.player.quad > 0.0 { 4.0 } else { 1.0 };
         if self.player.weapon == 4 {
             let target = self.player.pos + self.player.aim * 175.0;
             self.throw_grenade(self.player.pos, target, damage, false);
@@ -837,7 +886,8 @@ impl Game {
             if self.intermission <= 0.0 {
                 self.wave += 1;
                 self.remaining =
-                    waves::party_roster(self.wave, self.party_size.max(1)).len() as u32;
+                    waves::party_roster(self.wave, self.party_size, self.difficulty.enemy_count)
+                        .len() as u32;
                 self.spawn_timer = 0.0;
                 self.intermission = 4.0;
                 self.wave_announcement = 3.5;
@@ -878,7 +928,8 @@ impl Game {
         self.spawn_timer -= dt;
         if self.remaining > 0
             && self.spawn_timer <= 0.0
-            && self.enemies.len() + self.spawns.len() < 48 * self.party_size.max(1)
+            && self.enemies.len() + self.spawns.len()
+                < (48.0 * self.party_count_scale()).ceil() as usize
         {
             let mut candidates: Vec<Vec2> = self
                 .level
@@ -917,7 +968,8 @@ impl Game {
             }
             if !candidates.is_empty() {
                 let idx = (self.random() * candidates.len() as f32) as usize % candidates.len();
-                let roster = waves::party_roster(self.wave, self.party_size.max(1));
+                let roster =
+                    waves::party_roster(self.wave, self.party_size, self.difficulty.enemy_count);
                 let kind = roster[roster.len() - self.remaining as usize];
                 self.spawns.push(Spawn {
                     pos: candidates[idx],
@@ -926,7 +978,7 @@ impl Game {
                 });
                 self.remaining -= 1;
             }
-            self.spawn_timer = waves::spawn_interval(self.wave) / self.party_size.max(1) as f32;
+            self.spawn_timer = waves::spawn_interval(self.wave) / self.party_count_scale();
         }
         for s in &mut self.spawns {
             s.timer -= dt;
@@ -941,8 +993,9 @@ impl Game {
             }
         });
         for (pos, kind) in ready {
-            let health =
-                kind.base_health() * waves::health_scale(self.wave) * self.party_stat_scale();
+            let health = kind.base_health()
+                * waves::health_scale(self.wave)
+                * Difficulty::scale(self.party_size, self.difficulty.enemy_health);
             let phase = self.random() * std::f32::consts::TAU;
             self.enemies.push(Enemy {
                 pos,
@@ -965,7 +1018,7 @@ impl Game {
             .map(|p| (p.pos, p.velocity, p.health > 0.0 && p.connected))
             .collect();
         let mut damage = vec![0.0; targets.len()];
-        let damage_scale = self.party_stat_scale();
+        let damage_scale = Difficulty::scale(self.party_size, self.difficulty.enemy_damage);
         let mut mortars = vec![];
         for (i, e) in self.enemies.iter_mut().enumerate() {
             e.previous = e.pos;
@@ -1209,6 +1262,12 @@ impl Game {
             return;
         }
         self.player.health = (self.player.health - damage).max(0.0);
+        if self.player.health == 0.0 && self.party_size > 0 {
+            self.beacons.push(ReviveBeacon {
+                pos: self.player.pos,
+                progress: 0.0,
+            });
+        }
         self.player.invulnerable = 0.45;
         self.hit_flash = 0.2;
         self.shake = 6.0;
@@ -1738,7 +1797,7 @@ mod tests {
             for party in [false, true] {
                 let mut g = Game::new(level.clone(), false);
                 if party {
-                    g = Game::new_party(level.clone(), false, &[0, 0]).unwrap();
+                    g = Game::new_party(level.clone(), false, 2).unwrap();
                     g.player.health = 0.0;
                 }
                 g.level.crates.push(vec2(300.0, 120.0));

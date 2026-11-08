@@ -84,24 +84,27 @@ impl PartyClient {
                     name,
                     endless,
                     members,
+                    difficulty,
                 } => {
                     let level = Level::parse(&name, &map)?;
                     if level.width > 128 || level.height > 128 {
                         return Err("Server arena is too large".into());
                     }
-                    let weapons: Vec<_> = members
-                        .iter()
-                        .map(|m| m.weapon.unwrap_or(usize::MAX))
-                        .collect();
-                    let mut game = Game::new_party(level, endless, &weapons)?;
+                    if !difficulty.valid() {
+                        return Err("Invalid server difficulty".into());
+                    }
+                    let mut game = Game::new_party(level, endless, members.len())?;
+                    game.difficulty = difficulty;
                     self.slot = members
                         .iter()
                         .find(|m| m.id == self.id)
                         .ok_or("Missing player in server roster")?
                         .slot;
                     game.player.slot = members[0].slot;
+                    game.player.name = members[0].name.clone();
                     for (player, member) in game.allies.iter_mut().zip(members.iter().skip(1)) {
                         player.slot = member.slot;
+                        player.name = member.name.clone();
                     }
                     if let Some(index) = game.allies.iter().position(|p| p.slot == self.slot) {
                         std::mem::swap(&mut game.player, &mut game.allies[index]);

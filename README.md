@@ -42,26 +42,28 @@ Display & Audio is available from the arena menu and pause screen. It offers 720
 
 Click **Online Party** in the arena menu. Enter the server's IPv4 or IPv6 address, TCP port (default **7777**), and your name, then connect to the waiting room. Tab moves between fields; Ctrl+A and Ctrl+V select and paste text. Up to **8 players** can join one room. The first player is the host (`*`); the role passes to the next player if the host leaves.
 
-Every player must select **one weapon** and click **I Am Ready**. Changing a selection clears readiness. The host clicks **Start Match** once everyone is ready. That weapon stays locked for the entire match, including after reviving; number keys and the mouse wheel cannot switch it. Ammunition reloads normally. The server selects the arena and campaign/endless mode and sends the map to every client, so local map files do not need to match.
+Every player clicks **I Am Ready**, then the host clicks **Start Match** once everyone is ready. All five weapons are available throughout the match: use **1-5 or the mouse wheel** to switch, just as in solo play. Ammunition reloads normally. The server selects the arena and campaign/endless mode and sends the map to every client, so local map files do not need to match.
 
-Players spawn together near the arena start. Each has a consistent armor/ring color, a P1-P8 label, and an overhead health bar; the team list shows names, health, fallen players, and departures. Allies can move and shoot through each other. Friendly fire, including self damage from player explosives, is disabled in this mode. Crates cannot be pushed into a living ally.
+Players spawn together near the arena start. Each has a consistent armor/ring color, their **player name above their character**, and an overhead health bar; the team list shows names, health, fallen players, and departures. Allies can move and shoot through each other. Friendly fire, including self damage from player explosives, is disabled in this mode. Crates cannot be pushed into a living ally.
 
-When a teammate falls, the next enemy killed drops a **revive beacon** if none is already available. An alive player must stay within its **64-unit radius** with a clear line to the beacon, keeping enemies outside it for **10 continuous seconds**. Leaving the area empty or letting an enemy enter resets progress; multiple allies do not accelerate it. One beacon revives one connected fallen teammate at **60 health**, with a full magazine and **3 seconds of protection**. It does not expire. Fallen players spectate living allies; **Tab** changes the followed player. Normal healing and between-wave recovery do not revive anyone.
+When a teammate falls, a **revive beacon appears immediately at their exact death position**, without needing an enemy kill. An alive player within its **64-unit radius**, with a clear line to the beacon and no enemy contesting it, contributes one second of progress per second. The beacon needs **10 seconds of total progress**: two allies take 5 seconds, three take about 3.3 seconds. If everyone moves away or an enemy contests the beacon, progress **drains by two seconds per second**, down to zero; returning resumes from what remains.
 
-Difficulty uses the number of players at match start and stays fixed after deaths or disconnections:
+Each completed beacon revives **one randomly selected connected fallen teammate**, regardless of join order, at **100 health**, with all magazines full and **3 seconds of protection**. The revived player appears in a safe spot near the beacon. Every death creates its own beacon, and unused beacons disappear when no connected fallen teammates remain. Fallen players spectate living allies; **Tab** changes the followed player. Normal healing and between-wave recovery do not revive anyone.
 
-| Starting players | Enemy count | Enemy health | Enemy damage |
-| --- | --- | --- | --- |
-| 1 | 1x | 1x | 1x |
-| 2 | 2x | 1.25x | 1.25x |
-| 4 | 4x | 1.75x | 1.75x |
-| 8 | 8x | 2.75x | 2.75x |
+The waiting room's **Difficulty** panel replaces weapon selection. Everyone can see the settings; only the host can adjust them with **-/+ buttons in 5% steps**. A change clears everyone's ready status. Settings stay fixed during a match and are retained when returning to the waiting room; an empty room resets them to defaults.
 
-These multipliers apply on top of normal wave progression. Boss waves still contain exactly one scheduled boss, with additional regular enemies. All enemy attacks scale, including melee, bullets, rockets, and grenades.
+| Setting | Range | Default |
+| --- | --- | --- |
+| Additional enemy count per additional player | 0% to +300% | +75% |
+| Additional enemy damage per additional player | 0% to +300% | +15% |
+| Additional enemy health per additional player | 0% to +300% | +15% |
+| Player damage adjustment, separately for each of the five weapons | -50% to +100% | 0% |
+
+Enemy multipliers use the number of players at match start: `1 + (starting players - 1) * bonus / 100`. They stay fixed after deaths or disconnections. For example, with the defaults, four players face **3.25x enemy count**, **1.45x health**, and **1.45x damage**. Enemy counts round up. These multipliers apply on top of normal wave progression; boss waves retain exactly one scheduled boss. Count settings also scale spawn frequency and the active-enemy limit. All enemy attacks scale, including melee, bullets, rockets, and grenades. Each weapon's damage adjustment applies equally to all players, including pellets and explosive damage, and combines with quad damage.
 
 **Escape opens the party menu; online combat keeps running**, including while a player changes settings or switches applications. The whole team loses when no connected player remains alive. After defeat or victory, the host can return everyone to the waiting room and start another match. A running match does not accept late joins or reconnections; a disconnected player leaves that match. Once everyone leaves, the server resets its room automatically.
 
-This is a direct-IP party mode with no accounts, matchmaking, or room password. Anyone able to reach the server can join an available seat. Use the same client/server build. The server owns movement, hits, health, drops, and readiness; clients send controls and render authoritative updates. Aim for a low-latency connection: this implementation uses TCP and interpolated snapshots, without local movement prediction.
+This is a direct-IP party mode with no accounts, matchmaking, or room password. Anyone able to reach the server can join an available seat. Use the same client/server build (party protocol 2); update the server as well as all clients for these settings. The server owns movement, hits, health, drops, and readiness; clients send controls and render authoritative updates. Aim for a low-latency connection: this implementation uses TCP and interpolated snapshots, without local movement prediction.
 
 ### Run the Linux server with Docker Compose
 
@@ -100,7 +102,7 @@ cargo run --locked --release --no-default-features --bin party-server -- --bind 
 # Optional: --map /path/to/map.mmp --endless
 ```
 
-For a socket-level check against an **empty test server**, run `python scripts/test-party-server.py 127.0.0.1 7777`. It joins eight clients, starts a match, checks admission/weapon/host rules, then disconnects them. It intentionally occupies the room during the test.
+For a socket-level check against an **empty test server**, run `python scripts/test-party-server.py 127.0.0.1 7777`. It joins eight clients, starts a match, checks admission/weapon switching/host rules, then disconnects them. It intentionally occupies the room during the test.
 
 ## Build from source
 
@@ -189,7 +191,7 @@ The map boundary is always solid, including maps without a wall border. Maps wit
 
 `src/party.rs` defines room rules and snapshots; `party_net.rs` implements bounded TCP framing; `party_server.rs` runs the authoritative fixed-step room; `party_client.rs` receives state; and `online_ui.rs` implements the connection screen, waiting room, spectator view, and online controls. The separate server entry point is `src/bin/party-server.rs`, packaged by `server/Dockerfile` and `compose.yaml`.
 
-`tests/party.rs` checks lobby authorization, eight-player spawning, scaling, weapon locks, revives, damage, disconnections, framing, and eight clients over real sockets. `cargo run --release -- --party-smoke-test` opens a desktop client with a local test server and seven bots, captures `target/smoke-party-connect.png`, `target/smoke-party-lobby.png`, `target/smoke-party-game.png`, `target/smoke-party-revive.png`, and `target/smoke-party-results.png`, verifies a revive and return to lobby, then exits. No externally hosted room is used. The server feature configuration can be checked with `cargo test --locked --no-default-features --all-targets` and the corresponding Clippy command.
+`tests/party.rs` checks lobby authorization, eight-player spawning, custom difficulty, weapon switching, death beacons, revive draining/acceleration/random selection, damage, disconnections, framing, and eight clients over real sockets. `cargo run --release -- --party-smoke-test` opens a desktop client with a local test server and seven bots, captures `target/smoke-party-connect.png`, `target/smoke-party-lobby.png`, `target/smoke-party-game.png`, `target/smoke-party-revive.png`, and `target/smoke-party-results.png`, verifies a revive and return to lobby, then exits. No externally hosted room is used. The server feature configuration can be checked with `cargo test --locked --no-default-features --all-targets` and the corresponding Clippy command.
 
 `src/arenas.rs` contains the 18 embedded layouts. `src/level.rs` handles parsing, terrain, pushing, collision, reachability, and navigation. `src/simulation.rs` contains deterministic gameplay, independent of window/input state; `src/waves.rs` defines campaign progression, enemy rosters, and boss scheduling. `src/assets.rs` decodes the embedded original BMP atlases with transparency; `src/menu.rs` handles paging. Rendering, audio, settings, and desktop integration live in the other `src/` modules.
 

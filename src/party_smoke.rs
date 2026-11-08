@@ -56,8 +56,7 @@ impl Smoke {
                     bot.poll().unwrap();
                 }
                 if !chosen && bots.len() == 7 && bots.iter().all(|b| b.lobby.is_some()) {
-                    for (i, bot) in bots.iter_mut().enumerate() {
-                        bot.send(ClientMessage::Weapon((i + 1) % 5)).unwrap();
+                    for bot in &mut bots {
                         bot.send(ClientMessage::Ready(true)).unwrap();
                     }
                     chosen = true;
@@ -65,23 +64,29 @@ impl Smoke {
                 if let Some(game) = &mut server.room.game {
                     game.intermission = 100.0;
                     if game.time > 2.0 && !downed {
-                        game.allies[0].health = 0.0;
-                        let pos = game.player.pos;
+                        game.allies[0].health = 1.0;
+                        let pos = game.allies[0].pos;
                         game.enemies.push(Enemy {
                             pos,
                             previous: pos,
                             kind: Kind::Runner,
-                            health: 0.0,
+                            health: 48.0,
                             max_health: 48.0,
-                            attack: 100.0,
+                            attack: 0.0,
                             tell: 0.0,
                             aim: Vec2::X,
                             phase: 0.0,
                         });
                         downed = true;
                     }
+                    if downed && game.allies[0].health <= 0.0 {
+                        game.enemies.clear();
+                    }
                     if game.time > 13.0 {
-                        assert!(game.allies[0].health > 0.0, "Smoke revive did not finish");
+                        assert_eq!(
+                            game.allies[0].health, 100.0,
+                            "Smoke revive must restore full health"
+                        );
                         game.victory = true;
                     }
                 }
@@ -119,7 +124,6 @@ impl Smoke {
         };
         match self.stage {
             0 if client.lobby.as_ref().is_some_and(|l| l.members.len() == 8) => {
-                client.send(ClientMessage::Weapon(0)).unwrap();
                 client.send(ClientMessage::Ready(true)).unwrap();
                 self.stage = 1;
             }

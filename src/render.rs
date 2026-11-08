@@ -402,6 +402,12 @@ pub fn world(game: &Game, assets: &Assets, cam: &Camera2D, interpolation: f32, e
         }
         if game.party_size > 0 {
             draw_circle_lines(p.x, p.y, 20.0, 2.0, color);
+        }
+    }
+    if game.party_size > 0 {
+        for player in game.players().filter(|p| p.connected && p.health > 0.0) {
+            let p = player.previous.lerp(player.pos, interpolation);
+            let color = Color::from_hex(mgame::party::COLORS[player.slot as usize % 8]);
             draw_rectangle(p.x - 24.0, p.y - 44.0, 48.0, 5.0, PANEL);
             draw_rectangle(
                 p.x - 24.0,
@@ -411,8 +417,8 @@ pub fn world(game: &Game, assets: &Assets, cam: &Camera2D, interpolation: f32, e
                 color,
             );
             text(
-                &format!("P{}", player.slot + 1),
-                p.x - 9.0,
+                &player.name,
+                p.x - measure_text(&player.name, None, 32, 13.0 / 32.0).width * 0.5,
                 p.y - 49.0,
                 13.0,
                 color,
@@ -926,7 +932,7 @@ pub fn hud(g: &Game, scale: f32) {
     );
     text(
         if g.party_size > 0 {
-            "WEAPON LOCKED    ESC / MENU"
+            "1-5 / WHEEL    ESC / MENU"
         } else {
             "1 2 3 4 5 / WEAPONS    ESC / PAUSE"
         },

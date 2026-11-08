@@ -37,7 +37,7 @@ def until(sock, kind):
     raise AssertionError("Expected " + kind)
 
 
-def connect(address, name, protocol=1):
+def connect(address, name, protocol=2):
     sock = socket.create_connection(address, timeout=5)
     sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
     send(sock, {"Join": {"protocol": protocol, "name": name}})
@@ -56,7 +56,6 @@ def main():
             until(client, "Welcome")
             lobby = until(client, "Lobby")
             assert len(lobby["members"]) == i + 1, "Use an empty test server"
-            send(client, {"Weapon": i % 5})
             send(client, {"Ready": True})
         with connect(address, "Ninth") as ninth:
             assert "full" in until(ninth, "Error")
@@ -72,20 +71,22 @@ def main():
             assert len(started["members"]) == 8
             state = until(client, "Snapshot")
             assert len(state["players"]) == 8
-            assert state["players"][i]["weapon"] == i % 5
+            assert state["players"][i]["weapon"] == 0
             assert all(p["health"] == 100.0 for p in state["players"])
         with connect(address, "Late") as late:
             assert "running" in until(late, "Error")
-        # Input is not allowed to change the starting weapon.
+        # All weapons are available through authoritative input.
         send(clients[0], {"Input": {"movement": [0.0, 0.0], "aim": [200.0, 200.0], "fire": False, "dash": False, "reload": False, "weapon": 4}})
-        for _ in range(3):
+        for _ in range(100):
             state = until(clients[0], "Snapshot")
-        assert state["players"][0]["weapon"] == 0
+            if state["players"][0]["weapon"] == 4:
+                break
+        assert state["players"][0]["weapon"] == 4
         clients[0].close()
         lobby = until(clients[1], "Lobby")
         assert lobby["host"] == lobby["members"][0]["id"]
         assert len(lobby["members"]) == 7
-        print("PASS: Linux/server handshake, eight clients, full room, host-only start, weapon lock, late join rejection, host transfer")
+        print("PASS: Linux/server handshake, eight clients, full room, host-only start, weapon switching, late join rejection, host transfer")
     finally:
         for client in clients:
             client.close()
